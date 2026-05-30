@@ -425,6 +425,47 @@ describe('buildPackagedDaemonSpawnEnv', () => {
   });
 });
 
+describe("buildPackagedDaemonSpawnEnv network injection", () => {
+  const paths = {
+    dataRoot: "/tmp/ns/data",
+    resourceRoot: "/tmp/ns/res",
+    installationRoot: "/tmp/ns/install",
+  } as unknown as import("../src/paths.js").PackagedNamespacePaths;
+
+  it("keeps dynamic daemon port and no token by default (no network)", () => {
+    const env = buildPackagedDaemonSpawnEnv(paths, {
+      appVersion: null,
+      daemonCliEntry: null,
+      requireDesktopAuth: false,
+    });
+    expect(env.OD_PORT).toBe("0");
+    expect(env.OD_BIND_HOST).toBeUndefined();
+    expect(env.OD_API_TOKEN).toBeUndefined();
+  });
+
+  it("injects bind host and token when network is provided", () => {
+    const env = buildPackagedDaemonSpawnEnv(paths, {
+      appVersion: null,
+      daemonCliEntry: null,
+      requireDesktopAuth: false,
+      network: { bindHost: "0.0.0.0", apiToken: "odtoken_xyz", daemonPort: null },
+    });
+    expect(env.OD_BIND_HOST).toBe("0.0.0.0");
+    expect(env.OD_API_TOKEN).toBe("odtoken_xyz");
+    expect(env.OD_PORT).toBe("0");
+  });
+
+  it("honors an explicit daemon port", () => {
+    const env = buildPackagedDaemonSpawnEnv(paths, {
+      appVersion: null,
+      daemonCliEntry: null,
+      requireDesktopAuth: false,
+      network: { daemonPort: 7777, bindHost: null, apiToken: null },
+    });
+    expect(env.OD_PORT).toBe("7777");
+  });
+});
+
 describe('waitForStatus child-exit fast-fail', () => {
   // mrcfps round-7: when OD_LEGACY_DATA_DIR is set the daemon status
   // budget extends to 30 minutes for legitimate large-payload migrations.

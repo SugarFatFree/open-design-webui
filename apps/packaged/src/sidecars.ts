@@ -276,6 +276,19 @@ function createPackagedDaemonManagedPathEnv(
   };
 }
 
+export type PackagedNetworkOptions = {
+  /** web 浏览器访问端口；映射到 web 子进程的 OD_WEB_PORT/PORT。 */
+  webPort?: number | null;
+  /** web 监听 host；映射到 web 子进程的 OD_HOST。 */
+  webHost?: string | null;
+  /** daemon 监听端口；映射到 daemon 的 OD_PORT，默认 0（动态）。 */
+  daemonPort?: number | null;
+  /** daemon 绑定 host；映射到 OD_BIND_HOST。 */
+  bindHost?: string | null;
+  /** daemon API token；映射到 OD_API_TOKEN。 */
+  apiToken?: string | null;
+};
+
 export type PackagedDaemonSpawnEnvOptions = {
   appVersion: string | null;
   amrProfile?: string | null;
@@ -294,6 +307,8 @@ export type PackagedDaemonSpawnEnvOptions = {
   telemetryRelayUrl?: string | null;
   posthogKey?: string | null;
   posthogHost?: string | null;
+  /** webui 网络注入；省略时保持动态端口 + 环回 + 无 token。 */
+  network?: PackagedNetworkOptions | null;
 };
 
 /**
@@ -307,7 +322,7 @@ export function buildPackagedDaemonSpawnEnv(
   options: PackagedDaemonSpawnEnvOptions,
 ): NodeJS.ProcessEnv {
   return {
-    [SIDECAR_ENV.DAEMON_PORT]: "0",
+    [SIDECAR_ENV.DAEMON_PORT]: String(options.network?.daemonPort ?? 0),
     ...(options.daemonCliEntry == null ? {} : { [SIDECAR_ENV.DAEMON_CLI_PATH]: options.daemonCliEntry }),
     // PR #974 round-4 P1 + round-5 P2: pinned ON when a desktop is
     // being started, OFF for headless. The daemon-side flag refuses
@@ -349,6 +364,12 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.posthogHost == null || options.posthogHost.length === 0
       ? {}
       : { POSTHOG_HOST: options.posthogHost }),
+    ...(options.network?.bindHost == null || options.network.bindHost.length === 0
+      ? {}
+      : { OD_BIND_HOST: options.network.bindHost }),
+    ...(options.network?.apiToken == null || options.network.apiToken.length === 0
+      ? {}
+      : { OD_API_TOKEN: options.network.apiToken }),
   };
 }
 
@@ -449,6 +470,7 @@ export async function startPackagedSidecars(
     webSidecarEntry: string | null;
     webStandaloneRoot: string | null;
     webOutputMode: PackagedWebOutputMode;
+    network?: PackagedNetworkOptions | null;
   },
 ): Promise<PackagedSidecarHandle> {
   await mkdir(paths.namespaceRoot, { recursive: true });
@@ -476,6 +498,7 @@ export async function startPackagedSidecars(
         telemetryRelayUrl: options.telemetryRelayUrl,
         posthogKey: options.posthogKey,
         posthogHost: options.posthogHost,
+        network: options.network ?? null,
       }),
       nodeCommand: options.nodeCommand,
       paths,
@@ -500,10 +523,13 @@ export async function startPackagedSidecars(
       entryPath: options.webSidecarEntry ?? resolveSidecarEntry("@open-design/web", "sidecar"),
       env: {
         [SIDECAR_ENV.DAEMON_PORT]: extractPort(daemonStatus.url),
-        [SIDECAR_ENV.WEB_PORT]: "0",
+        [SIDECAR_ENV.WEB_PORT]: String(options.network?.webPort ?? 0),
         ...(options.webStandaloneRoot == null ? {} : { OD_WEB_STANDALONE_ROOT: options.webStandaloneRoot }),
+        ...(options.network?.webHost == null || options.network.webHost.length === 0
+          ? {}
+          : { OD_HOST: options.network.webHost }),
         OD_WEB_OUTPUT_MODE: options.webOutputMode,
-        PORT: "0",
+        PORT: String(options.network?.webPort ?? 0),
       },
       nodeCommand: options.nodeCommand,
       paths,
