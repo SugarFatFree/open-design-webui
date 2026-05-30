@@ -72,6 +72,7 @@ async function writeOutputs(root: string, value: string): Promise<void> {
 
 function createConfig(root: string, cacheRoot: string): ToolPackConfig {
   return {
+    arch: "x64",
     containerized: false,
     electronBuilderCliPath: "electron-builder",
     electronDistPath: "electron-dist",

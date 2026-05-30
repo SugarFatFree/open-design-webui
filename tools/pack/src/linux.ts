@@ -26,11 +26,22 @@ import {
   stopProcesses,
 } from "@open-design/platform";
 
+import {
+  assembleNodeApp,
+  collectWorkspaceTarballs,
+  copyResourceTree,
+  readPackagedVersion,
+  type PackedTarballInfo,
+} from "./assemble.js";
 import type { ToolPackConfig } from "./config.js";
-import { copyBundledResourceTrees, linuxResources } from "./resources.js";
-import { copyOptionalVelaCliBinary } from "./vela-cli.js";
-import { electronBuilderVersionForAppVersion, readRuntimeAppVersion } from "./versions.js";
+import { linuxResources } from "./resources.js";
+import { electronBuilderVersionForAppVersion } from "./versions.js";
 import { processWebSourcemaps } from "./web-sourcemaps.js";
+
+// Re-exported for existing consumers (tests, mac/win closure checks) that import
+// these shared assembly primitives from the linux module. The single source of
+// truth now lives in ./assemble.ts.
+export { INTERNAL_PACKAGES, resolveProductionInstallCommand } from "./assemble.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,23 +56,6 @@ const CONTAINER_PNPM_PATH = "/tmp/pnpm";
 const CONTAINER_PNPM_HOME = "/tmp/pnpm-home";
 const CONTAINER_NODE_VERSION = "24.14.1";
 const CONTAINER_TOOLS_PACK_CLI_PATH = "tools/pack/bin/tools-pack.mjs";
-
-export const INTERNAL_PACKAGES = [
-  { directory: "packages/contracts", name: "@open-design/contracts" },
-  { directory: "packages/registry-protocol", name: "@open-design/registry-protocol" },
-  { directory: "packages/sidecar-proto", name: "@open-design/sidecar-proto" },
-  { directory: "packages/sidecar", name: "@open-design/sidecar" },
-  { directory: "packages/platform", name: "@open-design/platform" },
-  { directory: "packages/download", name: "@open-design/download" },
-  { directory: "packages/host", name: "@open-design/host" },
-  { directory: "packages/agui-adapter", name: "@open-design/agui-adapter" },
-  { directory: "packages/plugin-runtime", name: "@open-design/plugin-runtime" },
-  { directory: "packages/diagnostics", name: "@open-design/diagnostics" },
-  { directory: "apps/daemon", name: "@open-design/daemon" },
-  { directory: "apps/web", name: "@open-design/web" },
-  { directory: "apps/desktop", name: "@open-design/desktop" },
-  { directory: "apps/packaged", name: "@open-design/packaged" },
-] as const;
 
 export function sanitizeNamespace(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "-");
@@ -351,40 +345,6 @@ async function runPnpm(
   });
 }
 
-export type ProductionInstallCommand = { command: string; args: string[] };
-
-// Picks the package manager used to materialize the assembled-app node_modules
-// during writeAssembledApp. The default (`npm`) preserves host behavior for
-// developer-machine builds. When the build runs inside
-// `electronuserland/builder:base` (which strips npm, npx, and corepack),
-// buildDockerArgs sets OD_TOOLS_PACK_PNPM_BIN to the standalone pnpm binary it
-// bootstrapped, and this resolver routes the install through that binary.
-// `--config.node-linker=hoisted` keeps the resulting layout flat so
-// electron-builder packs node_modules the same way it does for npm-installed
-// trees.
-export function resolveProductionInstallCommand(env: NodeJS.ProcessEnv): ProductionInstallCommand {
-  const pnpmBin = env[PRODUCTION_INSTALL_PNPM_BIN_ENV];
-  if (pnpmBin != null && pnpmBin.length > 0) {
-    return {
-      command: pnpmBin,
-      args: ["install", "--prod", "--no-lockfile", "--config.node-linker=hoisted"],
-    };
-  }
-  return { command: "npm", args: ["install", "--omit=dev", "--no-package-lock"] };
-}
-
-async function runProductionInstall(appRoot: string): Promise<void> {
-  const { command, args } = resolveProductionInstallCommand(process.env);
-  await execFileAsync(command, args, {
-    cwd: appRoot,
-    env: process.env,
-  });
-}
-
-async function readPackagedVersion(config: ToolPackConfig): Promise<string> {
-  return readRuntimeAppVersion(config);
-}
-
 async function buildWorkspaceArtifacts(config: ToolPackConfig): Promise<void> {
   const webNextEnvPath = join(config.workspaceRoot, "apps", "web", "next-env.d.ts");
   const previousWebNextEnv = await readFile(webNextEnvPath, "utf8").catch(() => null);
@@ -418,53 +378,12 @@ async function buildWorkspaceArtifacts(config: ToolPackConfig): Promise<void> {
   await runPnpm(config, ["--filter", "@open-design/packaged", "build"]);
 }
 
-// --- Step 3: Tarball + resource helpers ---
-
-type PackedTarballInfo = {
-  fileName: string;
-  packageName: (typeof INTERNAL_PACKAGES)[number]["name"];
-};
-
-async function collectWorkspaceTarballs(
-  config: ToolPackConfig,
-  paths: LinuxPaths,
-): Promise<PackedTarballInfo[]> {
-  await rm(paths.tarballsRoot, { force: true, recursive: true });
-  await mkdir(paths.tarballsRoot, { recursive: true });
-  const packed: PackedTarballInfo[] = [];
-
-  for (const pkg of INTERNAL_PACKAGES) {
-    const before = new Set(await readdir(paths.tarballsRoot));
-    await runPnpm(config, ["-C", pkg.directory, "pack", "--pack-destination", paths.tarballsRoot]);
-    const after = await readdir(paths.tarballsRoot);
-    const novel = after.filter((e) => !before.has(e));
-    if (novel.length !== 1 || novel[0] == null) {
-      throw new Error(`expected one tarball for ${pkg.name}, got ${novel.length}`);
-    }
-    packed.push({ fileName: novel[0], packageName: pkg.name });
-  }
-  return packed;
-}
-
-async function copyResourceTree(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
-  await rm(paths.resourceRoot, { force: true, recursive: true });
-  await mkdir(paths.resourceRoot, { recursive: true });
-  await copyBundledResourceTrees({
-    workspaceRoot: config.workspaceRoot,
-    resourceRoot: paths.resourceRoot,
-  });
-  await mkdir(join(paths.resourceRoot, "bin"), { recursive: true });
-  await cp(process.execPath, join(paths.resourceRoot, "bin", "node"));
-  await chmod(join(paths.resourceRoot, "bin", "node"), 0o755);
-  await copyOptionalVelaCliBinary({
-    platform: "linux",
-    requireBundled: config.requireVelaCli,
-    resourceRoot: paths.resourceRoot,
-  });
-}
-
 // --- Step 4: writeAssembledApp helper ---
 
+// Assembles the Electron-packaged app tree. The tarball+package.json+main.cjs
+// install core is shared with the WebUI distribution via assembleNodeApp; the
+// Electron-only artifacts (preload.cjs, open-design-config.json) are written
+// here around that primitive.
 async function writeAssembledApp(
   config: ToolPackConfig,
   paths: LinuxPaths,
@@ -477,31 +396,7 @@ async function writeAssembledApp(
     join(paths.assembledAppRoot, "preload.cjs"),
   );
 
-  const dependencies: Record<string, string> = {};
-  for (const tarball of packed) {
-    dependencies[tarball.packageName] = `file:${join(paths.tarballsRoot, tarball.fileName)}`;
-  }
-
   const version = await readPackagedVersion(config);
-  const packageVersion = electronBuilderVersionForAppVersion(version);
-  const packageJson = {
-    name: "open-design-packaged",
-    version: packageVersion,
-    private: true,
-    main: "main.cjs",
-    dependencies,
-    description: "Local-first design product: detects your installed code-agent CLI, runs design skills + design systems, streams artifacts into a sandboxed preview.",
-    author: "Open Design Team",
-    repository: {
-      type: "git",
-      url: "https://github.com/nexu-io/open-design.git"
-    }
-  };
-  await writeFile(paths.assembledPackageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
-
-  const mainStub = `"use strict";\nrequire("@open-design/packaged");\n`;
-  await writeFile(paths.assembledMainEntryPath, mainStub, "utf8");
-
   await writeFile(
     paths.packagedConfigPath,
     `${JSON.stringify(
@@ -521,7 +416,12 @@ async function writeAssembledApp(
     "utf8",
   );
 
-  await runProductionInstall(paths.assembledAppRoot);
+  await assembleNodeApp({
+    config,
+    appRoot: paths.assembledAppRoot,
+    tarballsRoot: paths.tarballsRoot,
+    packed,
+  });
 }
 
 // --- Step 5: writeLinuxBuilderConfig helper ---
@@ -631,8 +531,8 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   const paths = resolveLinuxPaths(config);
   await mkdir(config.roots.output.namespaceRoot, { recursive: true });
   await buildWorkspaceArtifacts(config);
-  await copyResourceTree(config, paths);
-  const tarballs = await collectWorkspaceTarballs(config, paths);
+  await copyResourceTree(config, paths.resourceRoot);
+  const tarballs = await collectWorkspaceTarballs(config, paths.tarballsRoot);
   await writeAssembledApp(config, paths, tarballs);
   await writeLinuxBuilderConfig(config, paths);
   await runElectronBuilderLinux(config, paths);
