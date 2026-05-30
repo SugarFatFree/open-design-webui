@@ -12,6 +12,7 @@ Follow the root `AGENTS.md` and `tools/AGENTS.md` first. This tool owns the repo
 - Linux AppImage build/install/start/stop/logs/uninstall/cleanup smoke commands.
 - Linux headless (no-Electron) install/start/stop via `--headless` flag on `install`, `start`, and `stop`.
 - Linux containerized builds via `electronuserland/builder` Docker image for distro-agnostic glibc compat.
+- Cross-platform WebUI (no-Electron) build via `tools-pack webui build --platform <mac|win|linux> [--arch <x64|arm64>]`: produces a per-platform archive (zip for mac/win, tar.gz for linux) bundling the daemon+web (server output mode) node app + the target's prebuilt `better-sqlite3` + a terminal launcher (`open-design start|stop|status`) + double-click wrappers. Requires the user's system Node 24 at runtime; configurable port/host/token via flags or `webui.config.json`; opens a browser when a display is present.
 - Consuming sidecar/process/path primitives from `@open-design/sidecar-proto`, `@open-design/sidecar`, and `@open-design/platform`.
 
 ## Does not own
