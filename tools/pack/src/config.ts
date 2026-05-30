@@ -33,6 +33,7 @@ export type ToolPackCliOptions = {
   macCompression?: string;
   namespace?: string;
   path?: string;
+  platform?: string;
   portable?: boolean;
   removeData?: boolean;
   removeLogs?: boolean;
