@@ -112,7 +112,12 @@ async function commandStart(config: ResolvedWebuiConfig, json: boolean): Promise
   let token = config.token;
   if (!isLoopbackHost(config.host) && (token == null || token.length === 0)) {
     token = generateApiToken();
-    process.stdout.write(`\n  未为远程访问设置 token，已自动生成：\n    token: ${token}\n`);
+    // Keep --json stdout pure machine-readable: the generated token is still
+    // returned in the JSON payload below, so only print the prose notice in
+    // human mode.
+    if (!json) {
+      process.stdout.write(`\n  未为远程访问设置 token，已自动生成：\n    token: ${token}\n`);
+    }
   }
 
   const packagedConfig = resolveLauncherConfig(namespace);
