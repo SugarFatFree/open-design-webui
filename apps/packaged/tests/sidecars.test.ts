@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildPackagedDaemonSpawnEnv,
+  buildPackagedWebSpawnEnv,
   resolveDaemonStatusTimeoutMs,
   resolvePackagedChildBaseEnv,
   resolvePackagedElectronNodeCommand,
@@ -540,5 +541,42 @@ describe('waitForStatus child-exit fast-fail', () => {
     expect((captured as Error).message).toMatch(/daemon exited before reporting status/);
     expect((captured as Error).message).toContain('code=2');
     expect(elapsed).toBeLessThan(2_000);
+  });
+});
+
+describe('buildPackagedWebSpawnEnv', () => {
+  it('defaults to dynamic web port and no OD_HOST when no network', () => {
+    const env = buildPackagedWebSpawnEnv({
+      daemonUrl: 'http://127.0.0.1:7456',
+      webStandaloneRoot: null,
+      webOutputMode: 'server',
+    });
+    expect(env.OD_WEB_PORT).toBe('0');
+    expect(env.PORT).toBe('0');
+    expect(env.OD_HOST).toBeUndefined();
+    expect(env.OD_WEB_OUTPUT_MODE).toBe('server');
+  });
+
+  it('injects web host and web port from network', () => {
+    const env = buildPackagedWebSpawnEnv({
+      daemonUrl: 'http://127.0.0.1:7456',
+      webStandaloneRoot: null,
+      webOutputMode: 'server',
+      network: { webHost: '0.0.0.0', webPort: 8080 },
+    });
+    expect(env.OD_HOST).toBe('0.0.0.0');
+    expect(env.OD_WEB_PORT).toBe('8080');
+    expect(env.PORT).toBe('8080');
+  });
+
+  it('always wires the daemon port from daemonUrl, never from network.daemonPort', () => {
+    const env = buildPackagedWebSpawnEnv({
+      daemonUrl: 'http://127.0.0.1:55001',
+      webStandaloneRoot: null,
+      webOutputMode: 'server',
+      // a stray daemonPort must NOT leak into the web child's daemon wiring
+      network: { webPort: 8080, daemonPort: 9999 },
+    });
+    expect(env.OD_PORT).toBe('55001');
   });
 });

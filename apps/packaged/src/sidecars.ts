@@ -373,6 +373,35 @@ export function buildPackagedDaemonSpawnEnv(
   };
 }
 
+/**
+ * Pure helper: assemble the web sidecar's spawn env.
+ *
+ * Invariant: the web child always reaches the daemon at the daemon's
+ * actually-bound port (`extractPort(daemonUrl)`); `network.webPort` only
+ * sets the web child's OWN listen port (OD_WEB_PORT/PORT) and must never
+ * leak into the daemon-port wiring. Extracted from `startPackagedSidecars`
+ * so this invariant can be pinned by unit tests without spawning children.
+ */
+export function buildPackagedWebSpawnEnv(options: {
+  daemonUrl: string;
+  webStandaloneRoot: string | null;
+  webOutputMode: PackagedWebOutputMode;
+  network?: PackagedNetworkOptions | null;
+}): NodeJS.ProcessEnv {
+  return {
+    [SIDECAR_ENV.DAEMON_PORT]: extractPort(options.daemonUrl),
+    [SIDECAR_ENV.WEB_PORT]: String(options.network?.webPort ?? 0),
+    ...(options.webStandaloneRoot == null
+      ? {}
+      : { OD_WEB_STANDALONE_ROOT: options.webStandaloneRoot }),
+    ...(options.network?.webHost == null || options.network.webHost.length === 0
+      ? {}
+      : { OD_HOST: options.network.webHost }),
+    OD_WEB_OUTPUT_MODE: options.webOutputMode,
+    PORT: String(options.network?.webPort ?? 0),
+  };
+}
+
 async function spawnSidecarChild(options: {
   app: AppKey;
   entryPath: string;
@@ -521,16 +550,12 @@ export async function startPackagedSidecars(
     const web = await spawnSidecarChild({
       app: APP_KEYS.WEB,
       entryPath: options.webSidecarEntry ?? resolveSidecarEntry("@open-design/web", "sidecar"),
-      env: {
-        [SIDECAR_ENV.DAEMON_PORT]: extractPort(daemonStatus.url),
-        [SIDECAR_ENV.WEB_PORT]: String(options.network?.webPort ?? 0),
-        ...(options.webStandaloneRoot == null ? {} : { OD_WEB_STANDALONE_ROOT: options.webStandaloneRoot }),
-        ...(options.network?.webHost == null || options.network.webHost.length === 0
-          ? {}
-          : { OD_HOST: options.network.webHost }),
-        OD_WEB_OUTPUT_MODE: options.webOutputMode,
-        PORT: String(options.network?.webPort ?? 0),
-      },
+      env: buildPackagedWebSpawnEnv({
+        daemonUrl: daemonStatus.url,
+        webStandaloneRoot: options.webStandaloneRoot,
+        webOutputMode: options.webOutputMode,
+        network: options.network ?? null,
+      }),
       nodeCommand: options.nodeCommand,
       paths,
       runtime,
