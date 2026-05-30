@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   generateApiToken,
   hasDisplay,
   isLoopbackHost,
+  loadConfigFile,
   parseWebuiArgs,
   resolveWebuiConfig,
 } from "../src/webui-config.js";
@@ -94,6 +99,32 @@ describe("generateApiToken", () => {
     const token = generateApiToken();
     expect(token).toMatch(/^odtoken_[A-Za-z0-9_-]{20,}$/);
     expect(generateApiToken()).not.toBe(token);
+  });
+});
+
+describe("loadConfigFile", () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "webui-config-"));
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("parses a valid JSON config file", () => {
+    const path = join(dir, "ok.json");
+    writeFileSync(path, JSON.stringify({ port: 9090, host: "0.0.0.0" }), "utf8");
+    expect(loadConfigFile(path)).toEqual({ port: 9090, host: "0.0.0.0" });
+  });
+
+  it("returns null when the file does not exist (ENOENT)", () => {
+    expect(loadConfigFile(join(dir, "missing.json"))).toBeNull();
+  });
+
+  it("throws on invalid JSON", () => {
+    const path = join(dir, "bad.json");
+    writeFileSync(path, "{ not valid json", "utf8");
+    expect(() => loadConfigFile(path)).toThrow(/failed to read config file/i);
   });
 });
 
