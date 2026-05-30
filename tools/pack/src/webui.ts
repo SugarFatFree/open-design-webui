@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
-import { chmod, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import {
   assembleNodeApp,
+  buildWorkspaceArtifacts,
   collectWorkspaceTarballs,
   copyResourceTree,
   readPackagedVersion,
@@ -12,7 +13,6 @@ import {
 import { ToolPackCache } from "./cache.js";
 import type { ToolPackArch, ToolPackConfig, ToolPackPlatform } from "./config.js";
 import { webuiResourcesRoot, winResources } from "./resources.js";
-import { processWebSourcemaps } from "./web-sourcemaps.js";
 import { ensureWorkspaceBuildArtifacts } from "./workspace-build.js";
 
 const execFileAsync = promisify(execFile);
@@ -65,7 +65,7 @@ export async function installPrebuiltSqlite(
 ): Promise<void> {
   const target = prebuiltSqliteTarget(platform, arch);
   const sqliteDir = join(appRoot, "node_modules", "better-sqlite3");
-  const prebuildInstall = join(sqliteDir, "node_modules", ".bin", "prebuild-install");
+  const prebuildInstall = join(appRoot, "node_modules", ".bin", "prebuild-install");
   try {
     await execFileAsync(
       process.execPath,
@@ -101,57 +101,17 @@ export async function createWebuiArchive(
   await stat(archivePath);
 }
 
-// Mirrors buildWorkspaceArtifacts in linux.ts (server web output mode + daemon
-// dist + packaged dist), but routed through the cached
-// ensureWorkspaceBuildArtifacts path the mac/win lanes use.
-async function buildWorkspaceArtifactsForWebui(config: ToolPackConfig): Promise<void> {
-  const { createPackageManagerInvocation } = await import("@open-design/platform");
-  const runPnpm = async (args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<void> => {
-    const invocation = createPackageManagerInvocation(args, process.env);
-    await execFileAsync(invocation.command, invocation.args, {
-      cwd: config.workspaceRoot,
-      env: { ...process.env, ...extraEnv },
-    });
-  };
-
-  const webNextEnvPath = join(config.workspaceRoot, "apps", "web", "next-env.d.ts");
-  const previousWebNextEnv = await readFile(webNextEnvPath, "utf8").catch(() => null);
-
-  await runPnpm(["--filter", "@open-design/contracts", "build"]);
-  await runPnpm(["--filter", "@open-design/registry-protocol", "build"]);
-  await runPnpm(["--filter", "@open-design/sidecar-proto", "build"]);
-  await runPnpm(["--filter", "@open-design/sidecar", "build"]);
-  await runPnpm(["--filter", "@open-design/platform", "build"]);
-  await runPnpm(["--filter", "@open-design/host", "build"]);
-  await runPnpm(["--filter", "@open-design/download", "build"]);
-  await runPnpm(["--filter", "@open-design/agui-adapter", "build"]);
-  await runPnpm(["--filter", "@open-design/plugin-runtime", "build"]);
-  await runPnpm(["--filter", "@open-design/diagnostics", "build"]);
-  await runPnpm(["--filter", "@open-design/daemon", "build"]);
-  try {
-    await runPnpm(["--filter", "@open-design/web", "build"], { OD_WEB_OUTPUT_MODE: "server" });
-    await runPnpm(["--filter", "@open-design/web", "build:sidecar"]);
-    await processWebSourcemaps(config);
-  } finally {
-    if (previousWebNextEnv == null) {
-      await rm(webNextEnvPath, { force: true });
-    } else {
-      await writeFile(webNextEnvPath, previousWebNextEnv, "utf8");
-    }
-  }
-  await runPnpm(["--filter", "@open-design/desktop", "build"]);
-  await runPnpm(["--filter", "@open-design/packaged", "build"]);
-}
-
 export async function buildPackedWebui(config: ToolPackConfig): Promise<WebuiBuildResult> {
   const platform = config.platform;
   const arch = config.arch;
   const version = await readPackagedVersion(config);
 
-  // 1) ensure workspace build artifacts (web server-mode + daemon dist + packaged dist).
+  // 1) ensure workspace build artifacts (web server-mode + daemon dist + packaged
+  //    dist) via the shared builder, routed through the cached
+  //    ensureWorkspaceBuildArtifacts path the mac/win lanes use.
   const cache = new ToolPackCache(config.roots.cacheRoot);
   await ensureWorkspaceBuildArtifacts(config, cache, async () => {
-    await buildWorkspaceArtifactsForWebui(config);
+    await buildWorkspaceArtifacts(config);
   });
 
   const baseDir = join(config.roots.output.namespaceRoot, "webui", `${platform}-${arch}`);

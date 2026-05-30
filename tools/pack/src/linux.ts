@@ -18,7 +18,6 @@ import {
 import { createSidecarLaunchEnv, requestJsonIpc, resolveAppIpcPath } from "@open-design/sidecar";
 import {
   collectProcessTreePids,
-  createPackageManagerInvocation,
   createProcessStampArgs,
   listProcessSnapshots,
   readLogTail,
@@ -28,15 +27,16 @@ import {
 
 import {
   assembleNodeApp,
+  buildWorkspaceArtifacts,
   collectWorkspaceTarballs,
   copyResourceTree,
+  PRODUCTION_INSTALL_PNPM_BIN_ENV,
   readPackagedVersion,
   type PackedTarballInfo,
 } from "./assemble.js";
 import type { ToolPackConfig } from "./config.js";
 import { linuxResources } from "./resources.js";
 import { electronBuilderVersionForAppVersion } from "./versions.js";
-import { processWebSourcemaps } from "./web-sourcemaps.js";
 
 // Re-exported for existing consumers (tests, mac/win closure checks) that import
 // these shared assembly primitives from the linux module. The single source of
@@ -48,10 +48,6 @@ const execFileAsync = promisify(execFile);
 const PRODUCT_NAME = "Open Design";
 const APP_IMAGE_PRODUCT_NAME = "Open-Design";
 const DESKTOP_LOG_ECHO_ENV = "OD_DESKTOP_LOG_ECHO";
-// The containerized build sets this to the standalone pnpm binary fetched by
-// buildDockerArgs; runProductionInstall reads it to avoid invoking `npm` inside
-// `electronuserland/builder:base`, which strips npm/npx/corepack.
-const PRODUCTION_INSTALL_PNPM_BIN_ENV = "OD_TOOLS_PACK_PNPM_BIN";
 const CONTAINER_PNPM_PATH = "/tmp/pnpm";
 const CONTAINER_PNPM_HOME = "/tmp/pnpm-home";
 const CONTAINER_NODE_VERSION = "24.14.1";
@@ -280,8 +276,6 @@ type LinuxPaths = {
   appBuilderOutputRoot: string;
   appImagePath: string;
   assembledAppRoot: string;
-  assembledMainEntryPath: string;
-  assembledPackageJsonPath: string;
   installAppImagePath: string;
   installDesktopFilePath: string;
   installIconPath: string;
@@ -311,8 +305,6 @@ function resolveLinuxPaths(config: ToolPackConfig): LinuxPaths {
     appBuilderOutputRoot,
     appImagePath: "",
     assembledAppRoot: join(namespaceRoot, "assembled", "app"),
-    assembledMainEntryPath: join(namespaceRoot, "assembled", "app", "main.cjs"),
-    assembledPackageJsonPath: join(namespaceRoot, "assembled", "app", "package.json"),
     installAppImagePath: join(home, ".local", "bin", appImageInstallName(config.namespace)),
     installDesktopFilePath: join(home, ".local", "share", "applications", desktopFileName(config.namespace)),
     installIconPath: join(
@@ -329,53 +321,6 @@ function resolveLinuxPaths(config: ToolPackConfig): LinuxPaths {
     resourceRoot: join(namespaceRoot, "resources", "open-design"),
     tarballsRoot: join(namespaceRoot, "tarballs"),
   };
-}
-
-// --- Step 2: Runtime helpers ---
-
-async function runPnpm(
-  config: ToolPackConfig,
-  args: string[],
-  extraEnv: NodeJS.ProcessEnv = {},
-): Promise<void> {
-  const invocation = createPackageManagerInvocation(args, process.env);
-  await execFileAsync(invocation.command, invocation.args, {
-    cwd: config.workspaceRoot,
-    env: { ...process.env, ...extraEnv },
-  });
-}
-
-async function buildWorkspaceArtifacts(config: ToolPackConfig): Promise<void> {
-  const webNextEnvPath = join(config.workspaceRoot, "apps", "web", "next-env.d.ts");
-  const previousWebNextEnv = await readFile(webNextEnvPath, "utf8").catch(() => null);
-
-  await runPnpm(config, ["--filter", "@open-design/contracts", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/registry-protocol", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/sidecar-proto", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/sidecar", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/platform", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/host", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/download", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/agui-adapter", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/plugin-runtime", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/diagnostics", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/daemon", "build"]);
-  try {
-    await runPnpm(config, ["--filter", "@open-design/web", "build"], { OD_WEB_OUTPUT_MODE: "server" });
-    await runPnpm(config, ["--filter", "@open-design/web", "build:sidecar"]);
-    // Inject chunk IDs + upload browser sourcemaps to PostHog, then strip
-    // .map files before AppImage packaging. See
-    // `tools/pack/src/web-sourcemaps.ts`.
-    await processWebSourcemaps(config);
-  } finally {
-    if (previousWebNextEnv == null) {
-      await rm(webNextEnvPath, { force: true });
-    } else {
-      await writeFile(webNextEnvPath, previousWebNextEnv, "utf8");
-    }
-  }
-  await runPnpm(config, ["--filter", "@open-design/desktop", "build"]);
-  await runPnpm(config, ["--filter", "@open-design/packaged", "build"]);
 }
 
 // --- Step 4: writeAssembledApp helper ---

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -9,6 +9,7 @@ import type { ToolPackConfig } from "./config.js";
 import { copyBundledResourceTrees } from "./resources.js";
 import { copyOptionalVelaCliBinary } from "./vela-cli.js";
 import { electronBuilderVersionForAppVersion, readRuntimeAppVersion } from "./versions.js";
+import { processWebSourcemaps } from "./web-sourcemaps.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,7 +17,7 @@ const execFileAsync = promisify(execFile);
 // it bootstrapped (the `electronuserland/builder:base` image strips
 // npm/npx/corepack). resolveProductionInstallCommand reads it to avoid invoking
 // `npm` inside the container.
-const PRODUCTION_INSTALL_PNPM_BIN_ENV = "OD_TOOLS_PACK_PNPM_BIN";
+export const PRODUCTION_INSTALL_PNPM_BIN_ENV = "OD_TOOLS_PACK_PNPM_BIN";
 
 export const INTERNAL_PACKAGES = [
   { directory: "packages/contracts", name: "@open-design/contracts" },
@@ -183,4 +184,38 @@ export async function assembleNodeApp({
   await writeFile(join(appRoot, "main.cjs"), mainStub, "utf8");
 
   await runProductionInstall(appRoot);
+}
+
+// Builds all workspace packages required by a packaged distribution: contracts,
+// protocol packages, daemon, web (server output mode), and packaged/desktop.
+// Shared by the Linux AppImage lane and the WebUI distribution lane.
+// The caller is responsible for any caching layer (e.g. ensureWorkspaceBuildArtifacts).
+export async function buildWorkspaceArtifacts(config: ToolPackConfig): Promise<void> {
+  const webNextEnvPath = join(config.workspaceRoot, "apps", "web", "next-env.d.ts");
+  const previousWebNextEnv = await readFile(webNextEnvPath, "utf8").catch(() => null);
+
+  await runPnpm(config, ["--filter", "@open-design/contracts", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/registry-protocol", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/sidecar-proto", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/sidecar", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/platform", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/host", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/download", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/agui-adapter", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/plugin-runtime", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/diagnostics", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/daemon", "build"]);
+  try {
+    await runPnpm(config, ["--filter", "@open-design/web", "build"], { OD_WEB_OUTPUT_MODE: "server" });
+    await runPnpm(config, ["--filter", "@open-design/web", "build:sidecar"]);
+    await processWebSourcemaps(config);
+  } finally {
+    if (previousWebNextEnv == null) {
+      await rm(webNextEnvPath, { force: true });
+    } else {
+      await writeFile(webNextEnvPath, previousWebNextEnv, "utf8");
+    }
+  }
+  await runPnpm(config, ["--filter", "@open-design/desktop", "build"]);
+  await runPnpm(config, ["--filter", "@open-design/packaged", "build"]);
 }
