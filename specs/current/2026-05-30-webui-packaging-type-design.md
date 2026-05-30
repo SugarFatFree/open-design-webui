@@ -19,7 +19,7 @@
 | 项 | 决策 |
 | --- | --- |
 | 运行时 | 捆绑系统 Node + 脚本，复用现有 `apps/packaged/src/headless.ts` 启动路径，不含 Electron |
-| 部署形态 | 双进程（daemon + web Next.js standalone）；浏览器访问 web 端口 |
+| 部署形态 | 双进程（daemon + web Next.js 进程，`OD_WEB_OUTPUT_MODE=server`）；浏览器访问 web 端口 |
 | 命令形态 | 单一启动器 + 子命令：`open-design start / stop / status` |
 | 配置文件 | 启动器同级目录 `webui.config.json`（JSON）；优先级：命令行参数 > 配置文件 > 环境变量 > 默认值 |
 | 远程 + token 语义 | token 仅保护 daemon `/api`（给程序化客户端）；Web UI 远程访问不强制 token（前端当前不携带 token，经 web 同机环回代理访问 daemon，环回豁免） |
@@ -32,7 +32,7 @@
 webui 运行时复用 `startPackagedSidecars` 启动两个子进程：
 
 - **daemon**：HTTP API + 业务逻辑。绑定 `OD_BIND_HOST`（默认 `127.0.0.1`），端口 `OD_PORT`（可动态）。`OD_API_TOKEN` 保护 `/api`，但对环回来源豁免。
-- **web**（Next.js standalone）：浏览器访问的前端。监听 host `OD_HOST`（`apps/web/sidecar/server.ts:30`，默认 `127.0.0.1`），端口 `OD_WEB_PORT` / `PORT`。web 把 `/api` 代理到 daemon，代理目标恒为 `127.0.0.1`（`apps/web/next.config.ts:12`、`apps/web/sidecar/server.ts` 的 `DAEMON_HOST`）。
+- **web**（Next.js 进程，`OD_WEB_OUTPUT_MODE=server`）：浏览器访问的前端。监听 host `OD_HOST`（`apps/web/sidecar/server.ts:30`，默认 `127.0.0.1`），端口 `OD_WEB_PORT` / `PORT`。web 把 `/api` 代理到 daemon，代理目标恒为 `127.0.0.1`（`apps/web/next.config.ts:12`、`apps/web/sidecar/server.ts` 的 `DAEMON_HOST`）。
 
 由此推导出配置到环境变量的映射：
 
@@ -73,7 +73,7 @@ tools-pack webui build --to <mac|win|linux> [--arch <x64|arm64>] [--app-version 
 
 ```
 open-design-webui-<版本>-<os>-<arch>.(zip|tar.gz)
-  app/                         # 组装好的 node 应用：daemon dist + web .next/standalone + packaged dist
+  app/                         # 组装好的 node 应用：daemon dist + web 产物(server 模式) + packaged dist
     node_modules/              # 生产依赖，含本平台预编译的 better-sqlite3
   bin/open-design              # 启动器外壳脚本 -> 调 `node app/.../webui-launcher.mjs`
   Open Design WebUI.command    # mac 双击 -> 打开 Terminal 运行 `open-design start`
@@ -85,7 +85,7 @@ open-design-webui-<版本>-<os>-<arch>.(zip|tar.gz)
 
 原生模块策略：要求系统 Node 24（24.x 内 ABI 137 稳定），故只有 `better-sqlite3` 的预编译产物按平台/架构区分。构建时通过 `prebuild-install --platform/--arch`（或等价方式）拉取目标平台预编译二进制放入 `app/node_modules`，受支持平台无需本机编译器。跨架构构建需目标平台预编译包存在。
 
-web 输出模式：webui 沿用 standalone server 形态（`OD_WEB_OUTPUT_MODE=standalone`，与现有打包一致），因为部署形态确认为双进程。
+web 输出模式：webui 统一用 `OD_WEB_OUTPUT_MODE=server`（与现有 Linux headless 一致、已验证可在打包后运行的双进程组合）；构建命令层覆盖各平台默认，避免 mac/win 落到 standalone、linux 落到 server 的不一致。
 
 ## 6. 启动器 CLI
 
