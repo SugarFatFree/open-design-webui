@@ -92,6 +92,12 @@ describe("isLoopbackHost", () => {
     expect(isLoopbackHost("0.0.0.0")).toBe(false);
     expect(isLoopbackHost("192.168.1.20")).toBe(false);
   });
+  it("treats malformed 127.x hosts as remote (matches daemon net.isIP guard)", () => {
+    // Without the IPv4 guard these would be misclassified as loopback, so the
+    // launcher would skip token generation while the daemon demands a token.
+    expect(isLoopbackHost("127.")).toBe(false);
+    expect(isLoopbackHost("127.garbage")).toBe(false);
+  });
 });
 
 describe("generateApiToken", () => {

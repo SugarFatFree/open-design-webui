@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 
 export type WebuiCommand = "start" | "stop" | "status";
 
@@ -108,11 +109,18 @@ export function resolveWebuiConfig(input: {
   return { port, host, token, openBrowser, namespace, dataDir };
 }
 
+// Mirrors the daemon's isLoopbackHostname (apps/daemon/src/server.ts): the
+// net.isIP guard is required so this launcher's "is loopback → skip token"
+// decision can never disagree with the daemon's "non-loopback → require token"
+// enforcement. A malformed host like "127.garbage" must be treated as
+// non-loopback by BOTH, or the launcher skips token generation while the daemon
+// refuses to start without one.
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (normalized === "localhost") return true;
   if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") return true;
-  return normalized === "127.0.0.1" || normalized.startsWith("127.");
+  if (isIP(normalized) === 4) return normalized === "127.0.0.1" || normalized.startsWith("127.");
+  return false;
 }
 
 export function generateApiToken(): string {

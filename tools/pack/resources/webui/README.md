@@ -19,7 +19,7 @@
 - `--no-open`：不自动打开浏览器
 - `--config <PATH>`：指定配置文件
 
-把上述键写入与本脚本同级的 `webui.config.json` 即可持久化。
+把上述键写入与本脚本同级的 `webui.config.json` 即可持久化。配置文件还支持两个可选键：`namespace`（运行时命名空间，隔离多实例）与 `dataDir`（覆盖数据目录，等价 `OD_DATA_DIR`）。
 
 ## 安全提示
 开启远程访问（`host=0.0.0.0`）时，token 仅保护直连 daemon API 的程序化客户端；**Web UI 自身不做应用层鉴权**。如需保护远程 Web UI，请在前面架设反向代理（nginx/caddy basic-auth）或使用 VPN / 网络隔离。
