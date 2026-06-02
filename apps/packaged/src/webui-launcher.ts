@@ -1,6 +1,7 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -19,12 +20,14 @@ import {
   requestJsonIpc,
   resolveAppIpcPath,
 } from "@open-design/sidecar";
+import { isProcessAlive, spawnBackgroundProcess } from "@open-design/platform";
 import { openBrowser } from "@open-design/daemon/browser-open";
 
 import { PACKAGED_NAMESPACE_ENV, type PackagedConfig } from "./config.js";
 import { writePackagedDesktopIdentity, writePackagedWebIdentity } from "./identity.js";
 import { resolvePackagedNamespacePaths } from "./paths.js";
-import { startPackagedSidecars } from "./sidecars.js";
+import { readSidecarLogTail, startPackagedSidecars } from "./sidecars.js";
+import { resolveWebuiLocale, webuiMessages } from "./webui-i18n.js";
 import {
   ensureWebuiConfigScaffold,
   generateApiToken,
@@ -40,6 +43,12 @@ import {
 } from "./webui-config.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
+// This module's own path, re-executed (with the `__serve` arg) as the detached
+// background worker that actually holds the sidecars.
+const SELF = fileURLToPath(import.meta.url);
+// Internal subcommand for the detached worker — not user-facing.
+const SERVE_COMMAND = "__serve";
+const RESOLVED_CONFIG_ENV = "OD_WEBUI_RESOLVED";
 
 function resolveNamespaceBaseRoot(): string {
   const odDataDir = process.env.OD_DATA_DIR;
@@ -101,27 +110,23 @@ function resolveWebuiHome(): string {
 type ConfigDiscovery = {
   configFile: WebuiConfigFile | null;
   configPath: string;
-  scaffoldNotice: string | null;
+  scaffold: { created: boolean; error?: string };
 };
 
 // Resolves the active config file, auto-creating `webui.config.json` on first
 // run (copying the shipped example, else writing defaults). An explicit
 // `--config <path>` is honored verbatim and never scaffolded. `configPath` is
-// returned so an auto-generated token can be persisted back into it.
+// returned so an auto-generated token can be persisted back into it; the raw
+// scaffold result is returned so the caller can localize the notice.
 function discoverConfigFile(explicitPath: string | undefined): ConfigDiscovery {
   if (explicitPath != null) {
-    return { configFile: loadConfigFile(explicitPath), configPath: resolve(explicitPath), scaffoldNotice: null };
+    return { configFile: loadConfigFile(explicitPath), configPath: resolve(explicitPath), scaffold: { created: false } };
   }
   const home = resolveWebuiHome();
   const configPath = join(home, "webui.config.json");
   const examplePath = join(home, "webui.config.example.json");
   const scaffold = ensureWebuiConfigScaffold({ configPath, examplePath });
-  const scaffoldNotice = scaffold.created
-    ? `已创建配置文件：${configPath}`
-    : scaffold.error != null
-      ? `无法创建配置文件（${scaffold.error}），继续使用默认配置`
-      : null;
-  return { configFile: loadConfigFile(configPath), configPath, scaffoldNotice };
+  return { configFile: loadConfigFile(configPath), configPath, scaffold };
 }
 
 function browserUrl(config: ResolvedWebuiConfig): string {
@@ -130,23 +135,40 @@ function browserUrl(config: ResolvedWebuiConfig): string {
   return `http://${resolveDisplayHost(config.host)}:${config.port}`;
 }
 
-async function commandStart(config: ResolvedWebuiConfig, json: boolean, configPath: string): Promise<void> {
+// The daemon binds `config.host`, so its direct API is reachable at the same
+// display host (LAN IP for 0.0.0.0). Prefer the actually bound port from the
+// daemon's reported URL; fall back to the configured one.
+function daemonDirectUrlFor(config: ResolvedWebuiConfig, daemonSidecarUrl: string | null): string | null {
+  const host = resolveDisplayHost(config.host);
+  let port: string | null;
+  try {
+    port = new URL(daemonSidecarUrl ?? "").port || (config.daemonPort != null ? String(config.daemonPort) : null);
+  } catch {
+    port = config.daemonPort != null ? String(config.daemonPort) : null;
+  }
+  return port != null ? `http://${host}:${port}` : null;
+}
+
+function currentLocale() {
+  return resolveWebuiLocale({ env: process.env });
+}
+
+function stopHint(): string {
+  return process.platform === "win32" ? "open-design.cmd stop" : "./open-design.sh stop";
+}
+
+type ServeHandle = { webUrl: string; daemonUrl: string | null };
+
+// Starts daemon+web sidecars, writes identities, and stands up the desktop IPC
+// server (STATUS/SHUTDOWN). Shared by the detached background worker and by
+// `--foreground` mode. It does NOT print the banner or open a browser — the
+// orchestrator owns user-facing output. The process stays alive afterwards via
+// the IPC server handle (no explicit blocking needed).
+async function runServer(config: ResolvedWebuiConfig): Promise<ServeHandle> {
   const namespace = OPEN_DESIGN_SIDECAR_CONTRACT.normalizeNamespace(
     config.namespace ?? process.env[PACKAGED_NAMESPACE_ENV] ?? SIDECAR_DEFAULTS.namespace,
   );
   if (config.dataDir != null) process.env.OD_DATA_DIR = config.dataDir;
-
-  let token = config.token;
-  let tokenNotice: string | null = null;
-  if (!isLoopbackHost(config.host) && (token == null || token.length === 0)) {
-    // First remote start with no token: mint one and persist it to the config
-    // file so subsequent restarts reuse it (no fresh token, no repeated notice).
-    token = generateApiToken();
-    const persisted = persistTokenToConfig(configPath, token);
-    tokenNotice = persisted.persisted
-      ? `已自动生成远程访问 token 并写入 ${configPath}（重启复用）`
-      : `已自动生成远程访问 token（写入配置失败：${persisted.error}，仅本次有效）`;
-  }
 
   const packagedConfig = resolveLauncherConfig(namespace);
   const paths = resolvePackagedNamespacePaths(packagedConfig);
@@ -184,7 +206,7 @@ async function commandStart(config: ResolvedWebuiConfig, json: boolean, configPa
       webPort: config.port,
       daemonPort: config.daemonPort,
       bindHost: config.host,
-      apiToken: token,
+      apiToken: config.token,
     },
   });
 
@@ -192,12 +214,14 @@ async function commandStart(config: ResolvedWebuiConfig, json: boolean, configPa
   if (!webUrl) {
     await sidecars.close().catch(() => undefined);
     await identity.close().catch(() => undefined);
-    throw new Error("web sidecar failed to produce URL — check logs/desktop/latest.log");
+    throw new Error("web sidecar failed to produce URL — check logs/web/latest.log");
   }
   const displayUrl = browserUrl(config);
+  const daemonUrl = daemonDirectUrlFor(config, sidecars.daemon.url ?? null);
+  const t = webuiMessages(currentLocale());
 
   const shutdown = async (): Promise<void> => {
-    process.stdout.write("\n Shutting down Open Design...\n");
+    process.stdout.write(`\n ${t.shuttingDown}\n`);
     await ipcServer.close().catch(() => undefined);
     await sidecars.close().catch(() => undefined);
     await identity.close().catch(() => undefined);
@@ -210,7 +234,7 @@ async function commandStart(config: ResolvedWebuiConfig, json: boolean, configPa
       const request = normalizeDesktopSidecarMessage(message);
       switch (request.type) {
         case SIDECAR_MESSAGES.STATUS:
-          return { pid: process.pid, state: "running", url: displayUrl, updatedAt: new Date().toISOString() };
+          return { pid: process.pid, state: "running", url: displayUrl, daemonUrl, updatedAt: new Date().toISOString() };
         case SIDECAR_MESSAGES.SHUTDOWN:
           setImmediate(() => {
             void shutdown().finally(() => process.exit(0));
@@ -222,58 +246,164 @@ async function commandStart(config: ResolvedWebuiConfig, json: boolean, configPa
 
   await writePackagedWebIdentity({ paths, pid: process.pid, url: displayUrl });
 
-  // The daemon binds `config.host`, so its direct API is reachable at the same
-  // display host (LAN IP for 0.0.0.0) on the daemon port. Prefer the actually
-  // bound port from the daemon's reported URL; fall back to the configured one.
-  const displayHost = resolveDisplayHost(config.host);
-  const daemonPortActual = (() => {
-    try {
-      return new URL(sidecars.daemon.url ?? "").port || (config.daemonPort != null ? String(config.daemonPort) : null);
-    } catch {
-      return config.daemonPort != null ? String(config.daemonPort) : null;
-    }
-  })();
-  const daemonDirectUrl = daemonPortActual != null ? `http://${displayHost}:${daemonPortActual}` : null;
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 
-  if (json) {
+  return { webUrl: displayUrl, daemonUrl };
+}
+
+function printStartBanner(opts: {
+  json: boolean;
+  handle: ServeHandle;
+  config: ResolvedWebuiConfig;
+  token: string | null;
+  tokenNotice: string | null;
+  tokenPersisted: boolean | null;
+  background: boolean;
+}): void {
+  const { webUrl, daemonUrl } = opts.handle;
+  if (opts.json) {
     process.stdout.write(
       `${JSON.stringify({
         pid: process.pid,
-        url: displayUrl,
-        webPort: config.port,
-        daemonUrl: daemonDirectUrl,
-        token,
-        tokenPersisted: tokenNotice == null ? null : tokenNotice.includes("写入配置失败") === false,
+        url: webUrl,
+        webPort: opts.config.port,
+        daemonUrl,
+        token: opts.token,
+        background: opts.background,
+        tokenPersisted: opts.tokenPersisted,
       })}\n`,
     );
-  } else {
-    process.stdout.write(`\n Open Design 已启动\n\n`);
-    process.stdout.write(` ➜ 浏览器访问：${colorize(displayUrl)}\n\n`);
-    // Point 4 clarification: there is ONE address the user opens. /api is NOT a
-    // separate port — the web server reverse-proxies it to the internal daemon,
-    // so the browser/UI uses the same URL and needs no token. The token only
-    // guards DIRECT calls to the daemon API (programmatic clients).
-    process.stdout.write(` • UI 与 /api 同一地址：web 反代到内部 daemon，浏览器用上面的地址即可，无需 token\n`);
-    if (daemonDirectUrl != null) {
-      process.stdout.write(
-        token != null
-          ? ` • 直连 daemon API（仅程序化调用需要）：${daemonDirectUrl}/api，需带请求头 Authorization: Bearer <token>\n`
-          : ` • daemon 内部地址：${daemonDirectUrl}（本机访问无需 token）\n`,
-      );
+    return;
+  }
+  const t = webuiMessages(currentLocale());
+  process.stdout.write(`\n ${t.started}\n\n`);
+  process.stdout.write(` ➜ ${t.accessAt} ${colorize(webUrl)}\n\n`);
+  // Point 4: one address — /api is reverse-proxied, browser needs no token.
+  process.stdout.write(` • ${t.apiSameAddress}\n`);
+  if (daemonUrl != null) {
+    process.stdout.write(` • ${opts.token != null ? t.daemonDirect(daemonUrl) : t.daemonInternal(daemonUrl)}\n`);
+  }
+  if (opts.token != null) {
+    process.stdout.write(` • ${t.tokenLine(opts.token)}\n`);
+    if (opts.tokenNotice != null) process.stdout.write(`   ${opts.tokenNotice}\n`);
+  }
+  process.stdout.write(`\n ${opts.background ? t.backgroundStarted(stopHint()) : t.pressCtrlC}\n\n`);
+}
+
+// Polls the worker's desktop IPC STATUS until it reports a URL, fast-failing if
+// the detached worker dies (reads its log tail into the error so the real
+// failure surfaces in the foreground terminal).
+async function waitForWebuiReady(
+  ipcPath: string,
+  pid: number,
+  timeoutMs: number,
+  logPath: string,
+): Promise<ServeHandle> {
+  const start = Date.now();
+  const t = webuiMessages(currentLocale());
+  while (Date.now() - start < timeoutMs) {
+    if (!isProcessAlive(pid)) {
+      const tail = await readSidecarLogTail(logPath);
+      throw new Error(`${t.startFailedLog(logPath)}${tail.length > 0 ? `:\n${tail}` : ""}`);
     }
-    if (token != null) {
-      process.stdout.write(` • token：${token}\n`);
-      if (tokenNotice != null) process.stdout.write(`   ${tokenNotice}\n`);
+    try {
+      const reply = (await requestJsonIpc(ipcPath, { type: SIDECAR_MESSAGES.STATUS }, { timeoutMs: 800 })) as {
+        url?: string;
+        daemonUrl?: string | null;
+      };
+      if (reply?.url != null && reply.url.length > 0) {
+        return { webUrl: reply.url, daemonUrl: reply.daemonUrl ?? null };
+      }
+    } catch {
+      // not listening yet
     }
-    process.stdout.write(`\n Press Ctrl+C to stop\n\n`);
+    await sleep(200);
+  }
+  const tail = await readSidecarLogTail(logPath);
+  throw new Error(`${t.startFailedLog(logPath)}${tail.length > 0 ? `:\n${tail}` : ""}`);
+}
+
+// The detached background worker: re-resolves the config the foreground passed
+// via env, holds the sidecars + IPC server, and stays alive. Its stdout/stderr
+// are redirected to the namespace log file by spawnBackgroundProcess.
+async function commandServe(): Promise<void> {
+  const raw = process.env[RESOLVED_CONFIG_ENV];
+  if (raw == null || raw.length === 0) {
+    throw new Error(`${RESOLVED_CONFIG_ENV} missing for ${SERVE_COMMAND} worker`);
+  }
+  const config = JSON.parse(raw) as ResolvedWebuiConfig;
+  await runServer(config);
+}
+
+async function commandStart(
+  config: ResolvedWebuiConfig,
+  json: boolean,
+  configPath: string,
+  foreground: boolean,
+): Promise<void> {
+  const t = webuiMessages(currentLocale());
+
+  // Apply dataDir before computing namespace paths so the foreground (log path)
+  // and the detached worker (which inherits this env) agree on the data root.
+  if (config.dataDir != null) process.env.OD_DATA_DIR = config.dataDir;
+
+  let token = config.token;
+  let tokenNotice: string | null = null;
+  let tokenPersisted: boolean | null = null;
+  if (!isLoopbackHost(config.host) && (token == null || token.length === 0)) {
+    // First remote start with no token: mint one and persist it to the config
+    // file so subsequent restarts reuse it (no fresh token, no repeated notice).
+    token = generateApiToken();
+    const persisted = persistTokenToConfig(configPath, token);
+    tokenPersisted = persisted.persisted;
+    tokenNotice = persisted.persisted ? t.tokenPersisted(configPath) : t.tokenPersistFailed(persisted.error ?? "");
+  }
+  const resolved: ResolvedWebuiConfig = { ...config, token };
+
+  if (foreground) {
+    // Attached mode (systemd/docker/debug): run the server inline and block via
+    // the IPC server. Ctrl+C triggers the shutdown handler installed in runServer.
+    const handle = await runServer(resolved);
+    printStartBanner({ json, handle, config: resolved, token, tokenNotice, tokenPersisted, background: false });
+    if (resolved.openBrowser && hasDisplay(process.platform, process.env)) openBrowser(handle.webUrl);
+    return;
   }
 
-  if (config.openBrowser && hasDisplay(process.platform, process.env)) {
-    openBrowser(displayUrl);
+  // Default: detach into the background. Spawn this module again as `__serve`,
+  // unref it, wait for readiness over IPC, print, then exit so the terminal is
+  // free. `stop` talks to the detached worker over the same IPC path.
+  const namespace = OPEN_DESIGN_SIDECAR_CONTRACT.normalizeNamespace(
+    resolved.namespace ?? process.env[PACKAGED_NAMESPACE_ENV] ?? SIDECAR_DEFAULTS.namespace,
+  );
+  const paths = resolvePackagedNamespacePaths(resolveLauncherConfig(namespace));
+  await mkdir(paths.logsRoot, { recursive: true });
+  const logPath = join(paths.logsRoot, "webui.log");
+  const logHandle = await open(logPath, "a");
+  const ipcPath = resolveAppIpcPath({ app: APP_KEYS.DESKTOP, contract: OPEN_DESIGN_SIDECAR_CONTRACT, namespace });
+
+  let pid: number;
+  try {
+    const spawned = await spawnBackgroundProcess({
+      command: process.execPath,
+      args: [SELF, SERVE_COMMAND],
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        [RESOLVED_CONFIG_ENV]: JSON.stringify(resolved),
+        OD_LANG: currentLocale(),
+      },
+      logFd: logHandle.fd,
+    });
+    pid = spawned.pid;
+  } finally {
+    await logHandle.close().catch(() => undefined);
   }
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  const handle = await waitForWebuiReady(ipcPath, pid, 60_000, logPath);
+  printStartBanner({ json, handle, config: resolved, token, tokenNotice, tokenPersisted, background: true });
+  if (resolved.openBrowser && hasDisplay(process.platform, process.env)) openBrowser(handle.webUrl);
+  process.exit(0);
 }
 
 async function commandStopOrStatus(command: "stop" | "status", json: boolean): Promise<void> {
@@ -282,28 +412,45 @@ async function commandStopOrStatus(command: "stop" | "status", json: boolean): P
   );
   const ipc = resolveAppIpcPath({ app: APP_KEYS.DESKTOP, contract: OPEN_DESIGN_SIDECAR_CONTRACT, namespace });
   const type = command === "stop" ? SIDECAR_MESSAGES.SHUTDOWN : SIDECAR_MESSAGES.STATUS;
+  const t = webuiMessages(currentLocale());
   try {
     const reply = await requestJsonIpc(ipc, { type }, { timeoutMs: 2000 });
     if (json) process.stdout.write(`${JSON.stringify(reply)}\n`);
     else if (command === "status") process.stdout.write(` ${JSON.stringify(reply)}\n`);
-    else process.stdout.write(` Open Design 已停止\n`);
+    else process.stdout.write(` ${t.stopped}\n`);
   } catch {
     if (json) process.stdout.write(`${JSON.stringify({ state: "stopped" })}\n`);
-    else process.stdout.write(` 未发现运行中的 Open Design（namespace=${namespace}）\n`);
+    else process.stdout.write(` ${t.notRunning(namespace)}\n`);
     if (command === "status") process.exitCode = 1;
   }
 }
 
 async function main(): Promise<void> {
-  const { command, flags } = parseWebuiArgs(process.argv.slice(2));
-  if (command === "start") {
-    const json = flags.json === true;
-    const { configFile, configPath, scaffoldNotice } = discoverConfigFile(flags.config);
-    if (scaffoldNotice != null && !json) process.stdout.write(`\n ${scaffoldNotice}\n`);
-    const config = resolveWebuiConfig({ flags, configFile, env: process.env });
-    await commandStart(config, json, configPath);
+  const argv = process.argv.slice(2);
+  // Internal: the detached background worker re-enters here.
+  if (argv[0] === SERVE_COMMAND) {
+    await commandServe();
     return;
   }
+  const { command, flags } = parseWebuiArgs(argv);
+  if (command === "start") {
+    const json = flags.json === true;
+    const { configFile, configPath, scaffold } = discoverConfigFile(flags.config);
+    // Resolve locale from --lang > config.lang > env, then pin it via OD_LANG so
+    // all downstream output (and the detached worker) share one language.
+    const locale = resolveWebuiLocale({ flagLang: flags.lang, configLang: configFile?.lang, env: process.env });
+    process.env.OD_LANG = locale;
+    const t = webuiMessages(locale);
+    if (!json) {
+      if (scaffold.created) process.stdout.write(`\n ${t.configCreated(configPath)}\n`);
+      else if (scaffold.error != null) process.stdout.write(`\n ${t.configCreateFailed(scaffold.error)}\n`);
+    }
+    const config = resolveWebuiConfig({ flags, configFile, env: process.env });
+    await commandStart(config, json, configPath, flags.foreground === true);
+    return;
+  }
+  const locale = resolveWebuiLocale({ flagLang: flags.lang, env: process.env });
+  process.env.OD_LANG = locale;
   await commandStopOrStatus(command, flags.json === true);
 }
 

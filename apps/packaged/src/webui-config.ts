@@ -13,6 +13,10 @@ export type WebuiFlags = {
   openBrowser?: boolean;
   json?: boolean;
   config?: string;
+  /** run attached to the terminal instead of detaching into the background. */
+  foreground?: boolean;
+  /** launcher output locale override (e.g. "en", "zh-CN"). */
+  lang?: string;
 };
 
 export type WebuiConfigFile = {
@@ -25,6 +29,8 @@ export type WebuiConfigFile = {
   openBrowser?: boolean;
   namespace?: string;
   dataDir?: string | null;
+  /** launcher output locale (e.g. "en", "zh-CN"). */
+  lang?: string;
 };
 
 export type ResolvedWebuiConfig = {
@@ -82,6 +88,12 @@ export function parseWebuiArgs(argv: string[]): { command: WebuiCommand; flags: 
         break;
       case "--no-open":
         flags.openBrowser = false;
+        break;
+      case "--foreground":
+        flags.foreground = true;
+        break;
+      case "--lang":
+        flags.lang = argv[++i];
         break;
       case "--json":
         flags.json = true;

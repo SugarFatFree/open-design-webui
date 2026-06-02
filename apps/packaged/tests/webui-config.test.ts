@@ -48,6 +48,12 @@ describe("parseWebuiArgs", () => {
     expect(parsed.flags.daemonPort).toBe(42573);
   });
 
+  it("parses --foreground and --lang", () => {
+    const parsed = parseWebuiArgs(["start", "--foreground", "--lang", "zh-CN"]);
+    expect(parsed.flags.foreground).toBe(true);
+    expect(parsed.flags.lang).toBe("zh-CN");
+  });
+
   it("rejects a non-integer --daemon-port", () => {
     expect(() => parseWebuiArgs(["--daemon-port", "abc"])).toThrow(/--daemon-port must be an integer/);
   });
