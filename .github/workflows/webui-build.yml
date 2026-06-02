@@ -7,6 +7,11 @@ name: Build WebUI Packages
 # the networked end-to-end packaging path that cannot run in the local sandbox.
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish the archives to a GitHub Release under this tag (e.g. webui-v0.8.0). GitHub Releases serve files as-is, so users download the .tar.gz / .zip directly instead of a zip-wrapped artifact. Leave empty to only upload workflow artifacts."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -76,3 +81,42 @@ jobs:
           name: webui-build-log-${{ matrix.name }}
           path: ${{ runner.temp }}/webui-build-${{ matrix.name }}.json
           if-no-files-found: ignore
+
+  # Optional publish step. GitHub's upload-artifact always re-zips its payload,
+  # so a downloaded artifact is a zip wrapping our real .tar.gz/.zip. A GitHub
+  # Release serves uploaded files byte-for-byte, so users get the archive itself.
+  # Runs only when the dispatcher supplies a release_tag.
+  release:
+    name: publish release
+    needs: build
+    if: ${{ inputs.release_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Download all WebUI archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: open-design-webui-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish archives to GitHub Release
+        run: |
+          set -euo pipefail
+          ls -lh dist
+          if gh release view "$VERSION_TAG" >/dev/null 2>&1; then
+            gh release upload "$VERSION_TAG" dist/* --clobber
+          else
+            gh release create "$VERSION_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Open Design WebUI $VERSION_TAG" \
+              --notes "Cross-platform terminal-launched WebUI packages (no Electron). Linux ships a .tar.gz (preserves the launcher executable bit); macOS and Windows ship a .zip." \
+              dist/*
+          fi
