@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, cp, mkdir, rm, stat } from "node:fs/promises";
+import { chmod, cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -53,7 +53,59 @@ export type WebuiBuildResult = {
   arch: ToolPackArch;
   archivePath: string;
   stageRoot: string;
+  /** @next/swc-* 原生编译器目录(构建期专用,运行时不加载),打包前已删除。 */
+  prunedNativeModules: string[];
 };
+
+// Recursively finds every `@next/swc-*` directory under a node_modules tree.
+// npm's flat install puts the host's binary at `node_modules/@next/swc-<host>`,
+// but a nested copy can also appear under `node_modules/next/node_modules/@next`,
+// so we descend through each package's own `node_modules`. The depth bound is a
+// runaway guard; real install trees are far shallower than 8.
+async function readDirEntries(dir: string) {
+  try {
+    return await readdir(dir, { withFileTypes: true });
+  } catch {
+    return []; // missing directory at this level
+  }
+}
+
+async function findNextSwcDirs(nodeModulesDir: string, found: string[], depth = 0): Promise<void> {
+  if (depth > 8) return;
+  for (const entry of await readDirEntries(nodeModulesDir)) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === "@next") {
+      const scope = join(nodeModulesDir, entry.name);
+      for (const child of await readDirEntries(scope)) {
+        if (child.isDirectory() && child.name.startsWith("swc-")) found.push(join(scope, child.name));
+      }
+    } else if (entry.name.startsWith("@")) {
+      // scope dir (e.g. @open-design): recurse into each scoped package's node_modules
+      const scope = join(nodeModulesDir, entry.name);
+      for (const pkg of await readDirEntries(scope)) {
+        if (pkg.isDirectory()) {
+          await findNextSwcDirs(join(scope, pkg.name, "node_modules"), found, depth + 1);
+        }
+      }
+    } else {
+      await findNextSwcDirs(join(nodeModulesDir, entry.name, "node_modules"), found, depth + 1);
+    }
+  }
+}
+
+// Strips Next.js's build-time SWC native binary (~125MB) from the assembled
+// WebUI app. SWC is only used by `next build`/`next dev`; the production
+// `next start` server we ship never loads it — Next's own `standalone` output
+// excludes it entirely, which is the proof this is safe. Returns the removed
+// directories for build-log visibility. Never throws on an absent tree.
+export async function pruneBuildOnlyNativeModules(appRoot: string): Promise<string[]> {
+  const found: string[] = [];
+  await findNextSwcDirs(join(appRoot, "node_modules"), found);
+  for (const dir of found) {
+    await rm(dir, { force: true, recursive: true });
+  }
+  return found;
+}
 
 // Ensures the assembled app carries the better-sqlite3 native binary for the
 // *target* platform/arch.
@@ -144,6 +196,10 @@ export async function buildPackedWebui(config: ToolPackConfig): Promise<WebuiBui
   // 4) target-platform better-sqlite3 prebuild
   await installPrebuiltSqlite(appRoot, platform, arch);
 
+  // 4b) strip the build-only @next/swc native compiler (~125MB). server-mode
+  //     `next start` never loads it; this is the bulk of the WebUI bundle size.
+  const prunedNativeModules = await pruneBuildOnlyNativeModules(appRoot);
+
   // 5) copy webui launcher scripts / wrappers / config example / README
   for (const name of ["open-design.sh", "open-design.cmd", "webui.config.example.json", "README.md"]) {
     await cp(join(webuiResourcesRoot, name), join(stageRoot, name));
@@ -164,5 +220,5 @@ export async function buildPackedWebui(config: ToolPackConfig): Promise<WebuiBui
   const sevenZip = platform === "win" ? winResources.sevenZipExe : null;
   await createWebuiArchive(stageRoot, archivePath, kind, sevenZip);
 
-  return { platform, arch, archivePath, stageRoot };
+  return { platform, arch, archivePath, stageRoot, prunedNativeModules };
 }
