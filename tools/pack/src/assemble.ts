@@ -50,6 +50,12 @@ async function runPnpm(
   await execFileAsync(invocation.command, invocation.args, {
     cwd: config.workspaceRoot,
     env: { ...process.env, ...extraEnv },
+    // On Windows createPackageManagerInvocation returns a cmd.exe shim whose
+    // args are pre-quoted and must be passed verbatim; without this Node
+    // re-quotes them and cmd.exe receives a doubly-quoted command string
+    // ("'\"pnpm ... build\"' is not recognized"). Honor the invocation's flag
+    // exactly as @open-design/platform's own spawn helpers do.
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 }
 
@@ -79,6 +85,11 @@ async function runProductionInstall(appRoot: string): Promise<void> {
   await execFileAsync(command, args, {
     cwd: appRoot,
     env: process.env,
+    // `npm` on Windows resolves to npm.cmd (a shell script) which execFile
+    // cannot launch without a shell. The install args are fixed constants, so
+    // there is no shell-injection risk. POSIX hosts and the container pnpm-bin
+    // path run fine through the shell too.
+    shell: true,
   });
 }
 

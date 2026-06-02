@@ -55,21 +55,33 @@ export type WebuiBuildResult = {
   stageRoot: string;
 };
 
-// Replaces the host-arch better-sqlite3 prebuild installed by the production
-// install with the prebuild for the *target* platform/arch, so a WebUI archive
-// built on (say) an arm64 mac can carry the x64-linux binary the consumer needs.
+// Ensures the assembled app carries the better-sqlite3 native binary for the
+// *target* platform/arch.
+//
+// Native build (target === host): the production `npm install` already ran
+// better-sqlite3's install script (`prebuild-install || node-gyp rebuild`),
+// which fetched/compiled the matching binary for this host. Nothing to do —
+// this is the path every CI matrix entry takes (each target builds on its own
+// runner). Critically, this also avoids invoking the `.bin/prebuild-install`
+// POSIX shim, which Windows `node` cannot execute directly.
+//
+// Cross build (host != target): explicitly fetch the target prebuild by running
+// prebuild-install's JS entry through node (works regardless of host shell).
 export async function installPrebuiltSqlite(
   appRoot: string,
   platform: ToolPackPlatform,
   arch: ToolPackArch,
 ): Promise<void> {
   const target = prebuiltSqliteTarget(platform, arch);
+  if (target.platform === process.platform && target.arch === process.arch) {
+    return;
+  }
   const sqliteDir = join(appRoot, "node_modules", "better-sqlite3");
-  const prebuildInstall = join(appRoot, "node_modules", ".bin", "prebuild-install");
+  const prebuildInstallJs = join(appRoot, "node_modules", "prebuild-install", "bin.js");
   try {
     await execFileAsync(
       process.execPath,
-      [prebuildInstall, "--platform", target.platform, "--arch", target.arch, "--napi"],
+      [prebuildInstallJs, "--platform", target.platform, "--arch", target.arch, "--napi"],
       { cwd: sqliteDir },
     );
   } catch (error) {
