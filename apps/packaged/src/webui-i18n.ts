@@ -18,7 +18,9 @@ export type WebuiMessages = {
   tokenPersisted: (path: string) => string;
   tokenPersistFailed: (error: string) => string;
   pressCtrlC: string;
-  backgroundStarted: (stopHint: string) => string;
+  runningInBackground: string;
+  hintStop: (cmd: string) => string;
+  hintForeground: (cmd: string) => string;
   shuttingDown: string;
   stopped: string;
   notRunning: (namespace: string) => string;
@@ -40,7 +42,9 @@ const EN: WebuiMessages = {
   tokenPersistFailed: (error) =>
     `Auto-generated a remote-access token (failed to write config: ${error}; valid for this run only)`,
   pressCtrlC: "Press Ctrl+C to stop",
-  backgroundStarted: (stopHint) => `Started in the background. Stop it with: ${stopHint}`,
+  runningInBackground: "Running in the background — closing this terminal won't stop it.",
+  hintStop: (cmd) => `Stop:        ${cmd} stop`,
+  hintForeground: (cmd) => `Foreground:  ${cmd} start --foreground   (runs attached; Ctrl+C stops it)`,
   shuttingDown: "Shutting down Open Design...",
   stopped: "Open Design stopped",
   notRunning: (namespace) => `No running Open Design found (namespace=${namespace})`,
@@ -59,7 +63,9 @@ const ZH_CN: WebuiMessages = {
   tokenPersisted: (path) => `已自动生成远程访问 token 并写入 ${path}（重启复用）`,
   tokenPersistFailed: (error) => `已自动生成远程访问 token（写入配置失败：${error}，仅本次有效）`,
   pressCtrlC: "按 Ctrl+C 停止",
-  backgroundStarted: (stopHint) => `已在后台启动。停止请运行：${stopHint}`,
+  runningInBackground: "已在后台运行 —— 关闭此终端不会停止服务。",
+  hintStop: (cmd) => `停止：    ${cmd} stop`,
+  hintForeground: (cmd) => `前台运行：${cmd} start --foreground   （前台运行，Ctrl+C 即停）`,
   shuttingDown: "正在关闭 Open Design...",
   stopped: "Open Design 已停止",
   notRunning: (namespace) => `未发现运行中的 Open Design（namespace=${namespace}）`,

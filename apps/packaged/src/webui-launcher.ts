@@ -153,8 +153,10 @@ function currentLocale() {
   return resolveWebuiLocale({ env: process.env });
 }
 
-function stopHint(): string {
-  return process.platform === "win32" ? "open-design.cmd stop" : "./open-design.sh stop";
+// The launcher script users invoke (`stop` / `start --foreground` hints append
+// to it). Windows ships open-design.cmd; POSIX ships ./open-design.sh.
+function cmdBase(): string {
+  return process.platform === "win32" ? "open-design.cmd" : "./open-design.sh";
 }
 
 type ServeHandle = { webUrl: string; daemonUrl: string | null };
@@ -288,7 +290,14 @@ function printStartBanner(opts: {
     process.stdout.write(` • ${t.tokenLine(opts.token)}\n`);
     if (opts.tokenNotice != null) process.stdout.write(`   ${opts.tokenNotice}\n`);
   }
-  process.stdout.write(`\n ${opts.background ? t.backgroundStarted(stopHint()) : t.pressCtrlC}\n\n`);
+  if (opts.background) {
+    const cmd = cmdBase();
+    process.stdout.write(`\n ${t.runningInBackground}\n`);
+    process.stdout.write(` ${t.hintStop(cmd)}\n`);
+    process.stdout.write(` ${t.hintForeground(cmd)}\n\n`);
+  } else {
+    process.stdout.write(`\n ${t.pressCtrlC}\n\n`);
+  }
 }
 
 // Polls the worker's desktop IPC STATUS until it reports a URL, fast-failing if

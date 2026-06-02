@@ -36,7 +36,9 @@ describe("webuiMessages", () => {
       expect(m.daemonDirect("http://h:7457")).toContain("http://h:7457");
       expect(m.configCreated("/tmp/c.json")).toContain("/tmp/c.json");
       expect(m.notRunning("default")).toContain("default");
-      expect(m.backgroundStarted("./open-design.sh stop")).toContain("./open-design.sh stop");
+      expect(m.runningInBackground.length).toBeGreaterThan(0);
+      expect(m.hintStop("./open-design.sh")).toContain("./open-design.sh stop");
+      expect(m.hintForeground("./open-design.sh")).toContain("--foreground");
     }
   });
 
