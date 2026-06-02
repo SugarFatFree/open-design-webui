@@ -1,0 +1,78 @@
+name: Build WebUI Packages
+
+# Cross-platform "WebUI" packaging type: a terminal-launched, no-Electron
+# distribution (daemon + web in server mode) driven by `tools-pack webui build`.
+# Each matrix entry runs on its target OS so the bundled better-sqlite3 prebuild
+# matches the runner platform/arch. Artifacts are uploaded per platform; this is
+# the networked end-to-end packaging path that cannot run in the local sandbox.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: webui (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mac-arm64
+            os: macos-14
+            platform: mac
+            arch: arm64
+          - name: mac-x64
+            os: macos-15-intel
+            platform: mac
+            arch: x64
+          - name: win-x64
+            os: windows-latest
+            platform: win
+            arch: x64
+          - name: linux-x64
+            os: ubuntu-latest
+            platform: linux
+            arch: x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build WebUI package
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec tools-pack webui build \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --dir "${{ runner.temp }}/tools-pack" \
+            --json | tee "${{ runner.temp }}/webui-build-${{ matrix.name }}.json"
+
+      - name: Upload WebUI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: open-design-webui-${{ matrix.name }}
+          path: ${{ runner.temp }}/tools-pack/**/open-design-webui-*
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: webui-build-log-${{ matrix.name }}
+          path: ${{ runner.temp }}/webui-build-${{ matrix.name }}.json
+          if-no-files-found: ignore
