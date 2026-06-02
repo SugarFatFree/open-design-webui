@@ -14,4 +14,7 @@ if [ "$MAJOR" -lt 24 ]; then
   exit 1
 fi
 export OD_RESOURCE_ROOT="$SCRIPT_DIR/app/resources/open-design"
+# Install root holding the launcher scripts + webui.config(.example).json, so
+# the launcher discovers/scaffolds config independent of the caller's cwd.
+export OD_WEBUI_HOME="$SCRIPT_DIR"
 exec node "$ENTRY" "$@"

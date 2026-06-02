@@ -13,5 +13,8 @@ if %MAJOR% LSS 24 (
   exit /b 1
 )
 set "OD_RESOURCE_ROOT=%SCRIPT_DIR%app\resources\open-design"
+rem Install root holding the launcher scripts + webui.config(.example).json, so
+rem the launcher discovers/scaffolds config independent of the caller's cwd.
+set "OD_WEBUI_HOME=%SCRIPT_DIR%"
 node "%ENTRY%" %*
 endlocal

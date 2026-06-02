@@ -1,10 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  defaultWebuiConfigFileContents,
+  ensureWebuiConfigScaffold,
   generateApiToken,
   hasDisplay,
   isLoopbackHost,
@@ -37,6 +39,15 @@ describe("parseWebuiArgs", () => {
       json: true,
       config: "/tmp/c.json",
     });
+  });
+
+  it("parses --daemon-port as an integer", () => {
+    const parsed = parseWebuiArgs(["start", "--daemon-port", "42573"]);
+    expect(parsed.flags.daemonPort).toBe(42573);
+  });
+
+  it("rejects a non-integer --daemon-port", () => {
+    expect(() => parseWebuiArgs(["--daemon-port", "abc"])).toThrow(/--daemon-port must be an integer/);
   });
 
   it("defaults command to start and leaves unset flags undefined", () => {
@@ -80,7 +91,69 @@ describe("resolveWebuiConfig precedence", () => {
     expect(resolved.host).toBe("127.0.0.1");
     expect(resolved.openBrowser).toBe(true);
   });
+
+  it("defaults daemonPort to null (dynamic loopback) when unset", () => {
+    const resolved = resolveWebuiConfig({ flags: {}, configFile: null, env: {} });
+    expect(resolved.daemonPort).toBeNull();
+  });
+
+  it("resolves daemonPort with flag > config > env precedence", () => {
+    expect(
+      resolveWebuiConfig({ flags: { daemonPort: 11111 }, configFile: { daemonPort: 22222 }, env: { OD_PORT: "33333" } })
+        .daemonPort,
+    ).toBe(11111);
+    expect(
+      resolveWebuiConfig({ flags: {}, configFile: { daemonPort: 22222 }, env: { OD_PORT: "33333" } }).daemonPort,
+    ).toBe(22222);
+    expect(resolveWebuiConfig({ flags: {}, configFile: null, env: { OD_PORT: "33333" } }).daemonPort).toBe(33333);
+  });
 });
+
+describe("config file scaffolding", () => {
+  it("defaultWebuiConfigFileContents is valid JSON exposing both ports", () => {
+    const parsed = JSON.parse(defaultWebuiConfigFileContents()) as Record<string, unknown>;
+    expect(parsed.port).toBe(7456);
+    // daemonPort 0 documents the dynamic-loopback default in the scaffold.
+    expect(parsed.daemonPort).toBe(0);
+    expect(parsed.host).toBe("127.0.0.1");
+  });
+
+  it("ensureWebuiConfigScaffold copies the example when present, else writes defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "od-cfg-scaffold-"));
+    const configPath = join(dir, "webui.config.json");
+    const examplePath = join(dir, "webui.config.example.json");
+
+    // No example, no config → writes defaults and reports created=true.
+    const first = ensureWebuiConfigScaffold({ configPath, examplePath });
+    expect(first.created).toBe(true);
+    expect(JSON.parse(loadConfigFileRaw(configPath)).port).toBe(7456);
+
+    // Config already exists → no-op, created=false.
+    const second = ensureWebuiConfigScaffold({ configPath, examplePath });
+    expect(second.created).toBe(false);
+
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  it("ensureWebuiConfigScaffold copies the example file verbatim when it exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "od-cfg-copy-"));
+    const configPath = join(dir, "webui.config.json");
+    const examplePath = join(dir, "webui.config.example.json");
+    writeFileSync(examplePath, JSON.stringify({ port: 9999, daemonPort: 8888 }), "utf8");
+
+    const result = ensureWebuiConfigScaffold({ configPath, examplePath });
+    expect(result.created).toBe(true);
+    const written = JSON.parse(loadConfigFileRaw(configPath));
+    expect(written.port).toBe(9999);
+    expect(written.daemonPort).toBe(8888);
+
+    rmSync(dir, { force: true, recursive: true });
+  });
+});
+
+function loadConfigFileRaw(path: string): string {
+  return readFileSync(path, "utf8");
+}
 
 describe("isLoopbackHost", () => {
   it("treats loopback hosts as local", () => {

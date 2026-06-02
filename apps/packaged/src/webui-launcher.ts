@@ -26,6 +26,7 @@ import { writePackagedDesktopIdentity, writePackagedWebIdentity } from "./identi
 import { resolvePackagedNamespacePaths } from "./paths.js";
 import { startPackagedSidecars } from "./sidecars.js";
 import {
+  ensureWebuiConfigScaffold,
   generateApiToken,
   hasDisplay,
   isLoopbackHost,
@@ -33,6 +34,7 @@ import {
   parseWebuiArgs,
   resolveWebuiConfig,
   type ResolvedWebuiConfig,
+  type WebuiConfigFile,
 } from "./webui-config.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -85,17 +87,34 @@ function colorize(text: string): string {
   return `\x1b[36m\x1b[4m${text}\x1b[0m`;
 }
 
-function discoverConfigFile(explicitPath?: string) {
-  if (explicitPath != null) return loadConfigFile(explicitPath);
-  const candidates = [
-    join(process.cwd(), "webui.config.json"),
-    join(__dirname, "..", "..", "..", "..", "webui.config.json"),
-  ];
-  for (const candidate of candidates) {
-    const cfg = loadConfigFile(candidate);
-    if (cfg != null) return cfg;
+// The install root that holds the launcher scripts and the shipped
+// `webui.config.example.json`. The shell/cmd wrappers export OD_WEBUI_HOME so
+// config discovery and first-run scaffolding are stable regardless of the
+// caller's cwd; we fall back to cwd when launched directly via `node`.
+function resolveWebuiHome(): string {
+  const home = process.env.OD_WEBUI_HOME;
+  return home != null && home.length > 0 ? resolve(home) : process.cwd();
+}
+
+type ConfigDiscovery = { configFile: WebuiConfigFile | null; scaffoldNotice: string | null };
+
+// Resolves the active config file, auto-creating `webui.config.json` on first
+// run (copying the shipped example, else writing defaults). An explicit
+// `--config <path>` is honored verbatim and never scaffolded.
+function discoverConfigFile(explicitPath: string | undefined): ConfigDiscovery {
+  if (explicitPath != null) {
+    return { configFile: loadConfigFile(explicitPath), scaffoldNotice: null };
   }
-  return null;
+  const home = resolveWebuiHome();
+  const configPath = join(home, "webui.config.json");
+  const examplePath = join(home, "webui.config.example.json");
+  const scaffold = ensureWebuiConfigScaffold({ configPath, examplePath });
+  const scaffoldNotice = scaffold.created
+    ? `已创建配置文件：${configPath}`
+    : scaffold.error != null
+      ? `无法创建配置文件（${scaffold.error}），继续使用默认配置`
+      : null;
+  return { configFile: loadConfigFile(configPath), scaffoldNotice };
 }
 
 function browserUrl(config: ResolvedWebuiConfig): string {
@@ -154,7 +173,7 @@ async function commandStart(config: ResolvedWebuiConfig, json: boolean): Promise
     network: {
       webHost: config.host,
       webPort: config.port,
-      daemonPort: null,
+      daemonPort: config.daemonPort,
       bindHost: config.host,
       apiToken: token,
     },
@@ -194,12 +213,32 @@ async function commandStart(config: ResolvedWebuiConfig, json: boolean): Promise
 
   await writePackagedWebIdentity({ paths, pid: process.pid, url: displayUrl });
 
+  const daemonAddr = (() => {
+    try {
+      const u = new URL(sidecars.daemon.url ?? "");
+      return `${u.hostname}:${u.port}`;
+    } catch {
+      return null;
+    }
+  })();
+
   if (json) {
-    process.stdout.write(`${JSON.stringify({ pid: process.pid, url: displayUrl, token })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ pid: process.pid, url: displayUrl, token, webPort: config.port, daemonUrl: sidecars.daemon.url ?? null })}\n`,
+    );
   } else {
     process.stdout.write(`\n Open Design is running\n\n`);
     process.stdout.write(` ➜ ${colorize(token ? `${displayUrl}/?token=${token}` : displayUrl)}\n\n`);
-    process.stdout.write(` Press Ctrl+C to stop\n\n`);
+    // One-port-by-design note: the only user-facing address is the web port.
+    // The daemon runs as an internal sidecar; web reverse-proxies /api to it,
+    // so there is nothing to open on the daemon port (it is loopback-only).
+    process.stdout.write(` web 监听 ${config.host}:${config.port}（上面的访问地址）\n`);
+    if (daemonAddr != null) {
+      process.stdout.write(
+        ` daemon 内部运行于 ${daemonAddr}${config.daemonPort == null ? "（随机环回端口，仅本机）" : "（仅本机）"}，/api 由 web 反代，无需单独访问\n`,
+      );
+    }
+    process.stdout.write(`\n Press Ctrl+C to stop\n\n`);
   }
 
   if (config.openBrowser && hasDisplay(process.platform, process.env)) {
@@ -231,9 +270,11 @@ async function commandStopOrStatus(command: "stop" | "status", json: boolean): P
 async function main(): Promise<void> {
   const { command, flags } = parseWebuiArgs(process.argv.slice(2));
   if (command === "start") {
-    const configFile = discoverConfigFile(flags.config);
+    const json = flags.json === true;
+    const { configFile, scaffoldNotice } = discoverConfigFile(flags.config);
+    if (scaffoldNotice != null && !json) process.stdout.write(`\n ${scaffoldNotice}\n`);
     const config = resolveWebuiConfig({ flags, configFile, env: process.env });
-    await commandStart(config, flags.json === true);
+    await commandStart(config, json);
     return;
   }
   await commandStopOrStatus(command, flags.json === true);
