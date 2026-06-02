@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { access, mkdir, open, type FileHandle } from "node:fs/promises";
+import { access, mkdir, open, readFile, type FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -141,6 +141,24 @@ async function openLog(path: string): Promise<FileHandle> {
   return await open(path, "w");
 }
 
+/**
+ * Reads the tail of a sidecar log so a startup crash surfaces in the caller's
+ * terminal instead of only in the log file. The packaged sidecars redirect the
+ * child's stdout/stderr straight into `latest.log`, so when a daemon throws
+ * before reporting status (e.g. an OD_RESOURCE_ROOT guard failure) the real
+ * stack trace lives there — embedding it in the thrown error means the launcher
+ * prints it immediately while the full log stays on disk for later inspection.
+ */
+export async function readSidecarLogTail(logPath: string, maxChars = 4000): Promise<string> {
+  try {
+    const content = (await readFile(logPath, "utf8")).trimEnd();
+    if (content.length === 0) return "";
+    return content.length > maxChars ? `…\n${content.slice(-maxChars)}` : content;
+  } catch {
+    return "";
+  }
+}
+
 const DAEMON_STATUS_TIMEOUT_MS = 35_000;
 const DAEMON_MIGRATION_STATUS_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -200,8 +218,12 @@ export async function waitForStatus<T>(
   try {
     while (Date.now() - startedAt < timeoutMs) {
       if (childExited !== null) {
+        const head = `daemon exited before reporting status (code=${childExited.code}, signal=${childExited.signal ?? 'none'})`;
+        const logTail = watch?.logPath != null ? await readSidecarLogTail(watch.logPath) : "";
         throw new Error(
-          `daemon exited before reporting status (code=${childExited.code}, signal=${childExited.signal ?? 'none'}); see ${watch?.logPath ?? '<no log path>'} for details`,
+          logTail.length > 0
+            ? `${head}:\n${logTail}\n(full log: ${watch?.logPath})`
+            : `${head}; see ${watch?.logPath ?? '<no log path>'} for details`,
         );
       }
       try {

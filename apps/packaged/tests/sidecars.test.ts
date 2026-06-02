@@ -28,6 +28,7 @@ import {
   resolvePackagedChildBaseEnv,
   resolvePackagedElectronNodeCommand,
   resolvePackagedPathEnv,
+  readSidecarLogTail,
   waitForStatus,
 } from '../src/sidecars.js';
 import type { PackagedNamespacePaths } from '../src/paths.js';
@@ -541,6 +542,66 @@ describe('waitForStatus child-exit fast-fail', () => {
     expect((captured as Error).message).toMatch(/daemon exited before reporting status/);
     expect((captured as Error).message).toContain('code=2');
     expect(elapsed).toBeLessThan(2_000);
+  });
+
+  it('embeds the daemon log tail in the error so the crash surfaces in the terminal', async () => {
+    // The packaged sidecars redirect the daemon's stdout/stderr into
+    // latest.log, so a startup crash (e.g. the OD_RESOURCE_ROOT guard) only
+    // lives in that file. waitForStatus must read it back and embed it in the
+    // thrown error — the launcher writes error.message to stderr, so the real
+    // stack trace prints in the terminal first while the full log stays on disk.
+    const dir = mkdtempSync(join(tmpdir(), 'od-log-tail-'));
+    const logPath = join(dir, 'latest.log');
+    const crash =
+      'Error: OD_RESOURCE_ROOT must be under the workspace root or app resources path\n' +
+      '    at resolveDaemonResourceRoot (.../server.js:660:15)';
+    writeFileSync(logPath, `${crash}\n`);
+
+    const child = fakeChild();
+    const promise = waitForStatus<{ url: string | null }>(
+      '/tmp/od-test-no-such-ipc-tail-' + Date.now(),
+      (status) => status.url != null,
+      30 * 60 * 1000,
+      { child, logPath },
+    );
+    setTimeout(() => child.fireExit(1, null), 50);
+
+    let captured: unknown;
+    try {
+      await promise;
+    } catch (err) {
+      captured = err;
+    }
+
+    expect(captured).toBeInstanceOf(Error);
+    const message = (captured as Error).message;
+    expect(message).toContain('OD_RESOURCE_ROOT must be under');
+    expect(message).toContain('resolveDaemonResourceRoot');
+    // Full log path still pointed to for later inspection.
+    expect(message).toContain(logPath);
+
+    rmSync(dir, { force: true, recursive: true });
+  });
+});
+
+describe('readSidecarLogTail', () => {
+  it('returns the trimmed tail and caps overly long logs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'od-log-tail-cap-'));
+    const logPath = join(dir, 'latest.log');
+    const body = 'x'.repeat(10_000);
+    writeFileSync(logPath, `head-marker\n${body}\n\n`);
+
+    const tail = await readSidecarLogTail(logPath, 4000);
+    expect(tail.length).toBeLessThanOrEqual(4000 + 2);
+    expect(tail.startsWith('…\n')).toBe(true);
+    // Trailing blank lines are trimmed.
+    expect(tail.endsWith('x')).toBe(true);
+
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  it('returns empty string when the log is missing or empty', async () => {
+    expect(await readSidecarLogTail('/tmp/od-no-such-log-' + Date.now())).toBe('');
   });
 });
 
