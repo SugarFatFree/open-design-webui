@@ -12,6 +12,8 @@ import {
   isLoopbackHost,
   loadConfigFile,
   parseWebuiArgs,
+  persistTokenToConfig,
+  resolveDisplayHost,
   resolveWebuiConfig,
 } from "../src/webui-config.js";
 
@@ -92,9 +94,14 @@ describe("resolveWebuiConfig precedence", () => {
     expect(resolved.openBrowser).toBe(true);
   });
 
-  it("defaults daemonPort to null (dynamic loopback) when unset", () => {
+  it("defaults daemonPort to the fixed 7457 when unset (deterministic across restarts)", () => {
     const resolved = resolveWebuiConfig({ flags: {}, configFile: null, env: {} });
-    expect(resolved.daemonPort).toBeNull();
+    expect(resolved.daemonPort).toBe(7457);
+  });
+
+  it("treats an explicit daemonPort of 0 as dynamic (null)", () => {
+    expect(resolveWebuiConfig({ flags: { daemonPort: 0 }, configFile: null, env: {} }).daemonPort).toBeNull();
+    expect(resolveWebuiConfig({ flags: {}, configFile: { daemonPort: 0 }, env: {} }).daemonPort).toBeNull();
   });
 
   it("resolves daemonPort with flag > config > env precedence", () => {
@@ -109,12 +116,66 @@ describe("resolveWebuiConfig precedence", () => {
   });
 });
 
+describe("resolveDisplayHost", () => {
+  const ifaces = {
+    lo: [{ family: "IPv4", address: "127.0.0.1", internal: true }],
+    eth0: [
+      { family: "IPv6", address: "fe80::1", internal: false },
+      { family: "IPv4", address: "192.168.1.50", internal: false },
+    ],
+  } as unknown as ReturnType<typeof import("node:os").networkInterfaces>;
+
+  it("maps bind-all hosts (0.0.0.0 / ::) to the first non-internal LAN IPv4", () => {
+    expect(resolveDisplayHost("0.0.0.0", ifaces)).toBe("192.168.1.50");
+    expect(resolveDisplayHost("::", ifaces)).toBe("192.168.1.50");
+  });
+
+  it("maps loopback hosts to localhost", () => {
+    expect(resolveDisplayHost("127.0.0.1", ifaces)).toBe("localhost");
+    expect(resolveDisplayHost("localhost", ifaces)).toBe("localhost");
+  });
+
+  it("passes a concrete host through unchanged", () => {
+    expect(resolveDisplayHost("10.0.0.7", ifaces)).toBe("10.0.0.7");
+  });
+
+  it("falls back to localhost when bind-all but no LAN IPv4 is found", () => {
+    const loopbackOnly = { lo: [{ family: "IPv4", address: "127.0.0.1", internal: true }] } as unknown as ReturnType<
+      typeof import("node:os").networkInterfaces
+    >;
+    expect(resolveDisplayHost("0.0.0.0", loopbackOnly)).toBe("localhost");
+  });
+});
+
+describe("persistTokenToConfig", () => {
+  it("writes the token while preserving existing keys", () => {
+    const dir = mkdtempSync(join(tmpdir(), "od-token-"));
+    const configPath = join(dir, "webui.config.json");
+    writeFileSync(configPath, JSON.stringify({ port: 7456, host: "0.0.0.0", token: null }), "utf8");
+
+    const result = persistTokenToConfig(configPath, "odtoken_abc");
+    expect(result.persisted).toBe(true);
+    const written = JSON.parse(loadConfigFileRaw(configPath));
+    expect(written.token).toBe("odtoken_abc");
+    expect(written.port).toBe(7456);
+    expect(written.host).toBe("0.0.0.0");
+
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  it("reports persisted=false on an unwritable path instead of throwing", () => {
+    const result = persistTokenToConfig("/proc/nonexistent-dir/webui.config.json", "odtoken_x");
+    expect(result.persisted).toBe(false);
+    expect(result.error).toBeTypeOf("string");
+  });
+});
+
 describe("config file scaffolding", () => {
   it("defaultWebuiConfigFileContents is valid JSON exposing both ports", () => {
     const parsed = JSON.parse(defaultWebuiConfigFileContents()) as Record<string, unknown>;
     expect(parsed.port).toBe(7456);
-    // daemonPort 0 documents the dynamic-loopback default in the scaffold.
-    expect(parsed.daemonPort).toBe(0);
+    // Fixed default daemon port keeps restarts deterministic; 0 would mean dynamic.
+    expect(parsed.daemonPort).toBe(7457);
     expect(parsed.host).toBe("127.0.0.1");
   });
 

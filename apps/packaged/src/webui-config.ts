@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
+import { networkInterfaces } from "node:os";
 
 export type WebuiCommand = "start" | "stop" | "status";
 
@@ -38,6 +39,10 @@ export type ResolvedWebuiConfig = {
 };
 
 const DEFAULT_PORT = 7456;
+// Fixed default daemon port (web + 1) so the internal daemon address is stable
+// across restarts instead of a random loopback port. Set daemonPort to 0 to opt
+// back into dynamic allocation.
+const DEFAULT_DAEMON_PORT = 7457;
 const DEFAULT_HOST = "127.0.0.1";
 const COMMANDS = new Set<WebuiCommand>(["start", "stop", "status"]);
 
@@ -110,13 +115,17 @@ export function resolveWebuiConfig(input: {
   const port =
     flags.port ?? cfg.port ?? (Number.isInteger(envPort) ? (envPort as number) : undefined) ?? DEFAULT_PORT;
 
-  // daemonPort defaults to null = a random loopback port chosen by the daemon
-  // (OD_PORT=0). A 0 in config/flag is treated the same as "dynamic" so the
-  // scaffolded `"daemonPort": 0` documents the default without pinning it.
+  // daemonPort defaults to the fixed DEFAULT_DAEMON_PORT so the internal daemon
+  // address is deterministic across restarts. An explicit 0 (flag/config/env)
+  // opts back into a random loopback port chosen by the daemon (OD_PORT=0),
+  // which resolves to null here.
   const envDaemonPort = env.OD_PORT != null ? Number(env.OD_PORT) : undefined;
   const daemonPortRaw =
-    flags.daemonPort ?? cfg.daemonPort ?? (Number.isInteger(envDaemonPort) ? (envDaemonPort as number) : undefined);
-  const daemonPort = daemonPortRaw != null && daemonPortRaw > 0 ? daemonPortRaw : null;
+    flags.daemonPort ??
+    cfg.daemonPort ??
+    (Number.isInteger(envDaemonPort) ? (envDaemonPort as number) : undefined) ??
+    DEFAULT_DAEMON_PORT;
+  const daemonPort = daemonPortRaw > 0 ? daemonPortRaw : null;
 
   const host = flags.host ?? cfg.host ?? env.OD_BIND_HOST ?? DEFAULT_HOST;
   const token = flags.token ?? cfg.token ?? env.OD_API_TOKEN ?? null;
@@ -137,12 +146,53 @@ export function resolveWebuiConfig(input: {
 export function defaultWebuiConfigFileContents(): string {
   const body = {
     port: DEFAULT_PORT,
-    daemonPort: 0,
+    daemonPort: DEFAULT_DAEMON_PORT,
     host: DEFAULT_HOST,
     token: null,
     openBrowser: true,
   };
   return `${JSON.stringify(body, null, 2)}\n`;
+}
+
+// Maps the *bind* host to a host a browser can actually open. A bind-all host
+// (0.0.0.0 / ::) is not browsable, so we surface the machine's first
+// non-internal LAN IPv4 instead; loopback binds show as "localhost"; a concrete
+// host passes through. Interfaces are injectable for tests.
+export function resolveDisplayHost(
+  host: string,
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): string {
+  const normalized = host.toLowerCase().replace(/^\[|\]$/g, "");
+  const isBindAll = normalized === "0.0.0.0" || normalized === "::" || normalized === "";
+  if (isBindAll) {
+    for (const addrs of Object.values(interfaces)) {
+      for (const addr of addrs ?? []) {
+        if (addr.family === "IPv4" && !addr.internal) return addr.address;
+      }
+    }
+    return "localhost";
+  }
+  return isLoopbackHost(host) ? "localhost" : host;
+}
+
+// Persists an auto-generated token back into webui.config.json so the next
+// start reuses it instead of minting a new one. Preserves any existing keys.
+// Never throws on a read-only install dir — the caller falls back to an
+// in-memory token for the current run.
+export function persistTokenToConfig(
+  configPath: string,
+  token: string,
+): { persisted: boolean; error?: string } {
+  try {
+    const existing: WebuiConfigFile = existsSync(configPath)
+      ? (JSON.parse(readFileSync(configPath, "utf8")) as WebuiConfigFile)
+      : {};
+    const next = { ...existing, token };
+    writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+    return { persisted: true };
+  } catch (error) {
+    return { persisted: false, error: (error as Error).message };
+  }
 }
 
 /**

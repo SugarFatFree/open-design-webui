@@ -32,6 +32,8 @@ import {
   isLoopbackHost,
   loadConfigFile,
   parseWebuiArgs,
+  persistTokenToConfig,
+  resolveDisplayHost,
   resolveWebuiConfig,
   type ResolvedWebuiConfig,
   type WebuiConfigFile,
@@ -96,14 +98,19 @@ function resolveWebuiHome(): string {
   return home != null && home.length > 0 ? resolve(home) : process.cwd();
 }
 
-type ConfigDiscovery = { configFile: WebuiConfigFile | null; scaffoldNotice: string | null };
+type ConfigDiscovery = {
+  configFile: WebuiConfigFile | null;
+  configPath: string;
+  scaffoldNotice: string | null;
+};
 
 // Resolves the active config file, auto-creating `webui.config.json` on first
 // run (copying the shipped example, else writing defaults). An explicit
-// `--config <path>` is honored verbatim and never scaffolded.
+// `--config <path>` is honored verbatim and never scaffolded. `configPath` is
+// returned so an auto-generated token can be persisted back into it.
 function discoverConfigFile(explicitPath: string | undefined): ConfigDiscovery {
   if (explicitPath != null) {
-    return { configFile: loadConfigFile(explicitPath), scaffoldNotice: null };
+    return { configFile: loadConfigFile(explicitPath), configPath: resolve(explicitPath), scaffoldNotice: null };
   }
   const home = resolveWebuiHome();
   const configPath = join(home, "webui.config.json");
@@ -114,29 +121,31 @@ function discoverConfigFile(explicitPath: string | undefined): ConfigDiscovery {
     : scaffold.error != null
       ? `无法创建配置文件（${scaffold.error}），继续使用默认配置`
       : null;
-  return { configFile: loadConfigFile(configPath), scaffoldNotice };
+  return { configFile: loadConfigFile(configPath), configPath, scaffoldNotice };
 }
 
 function browserUrl(config: ResolvedWebuiConfig): string {
-  const host = isLoopbackHost(config.host) ? "localhost" : config.host;
-  return `http://${host}:${config.port}`;
+  // resolveDisplayHost turns a bind-all host (0.0.0.0) into the machine's real
+  // LAN IP so the printed address is actually openable.
+  return `http://${resolveDisplayHost(config.host)}:${config.port}`;
 }
 
-async function commandStart(config: ResolvedWebuiConfig, json: boolean): Promise<void> {
+async function commandStart(config: ResolvedWebuiConfig, json: boolean, configPath: string): Promise<void> {
   const namespace = OPEN_DESIGN_SIDECAR_CONTRACT.normalizeNamespace(
     config.namespace ?? process.env[PACKAGED_NAMESPACE_ENV] ?? SIDECAR_DEFAULTS.namespace,
   );
   if (config.dataDir != null) process.env.OD_DATA_DIR = config.dataDir;
 
   let token = config.token;
+  let tokenNotice: string | null = null;
   if (!isLoopbackHost(config.host) && (token == null || token.length === 0)) {
+    // First remote start with no token: mint one and persist it to the config
+    // file so subsequent restarts reuse it (no fresh token, no repeated notice).
     token = generateApiToken();
-    // Keep --json stdout pure machine-readable: the generated token is still
-    // returned in the JSON payload below, so only print the prose notice in
-    // human mode.
-    if (!json) {
-      process.stdout.write(`\n  未为远程访问设置 token，已自动生成：\n    token: ${token}\n`);
-    }
+    const persisted = persistTokenToConfig(configPath, token);
+    tokenNotice = persisted.persisted
+      ? `已自动生成远程访问 token 并写入 ${configPath}（重启复用）`
+      : `已自动生成远程访问 token（写入配置失败：${persisted.error}，仅本次有效）`;
   }
 
   const packagedConfig = resolveLauncherConfig(namespace);
@@ -213,30 +222,48 @@ async function commandStart(config: ResolvedWebuiConfig, json: boolean): Promise
 
   await writePackagedWebIdentity({ paths, pid: process.pid, url: displayUrl });
 
-  const daemonAddr = (() => {
+  // The daemon binds `config.host`, so its direct API is reachable at the same
+  // display host (LAN IP for 0.0.0.0) on the daemon port. Prefer the actually
+  // bound port from the daemon's reported URL; fall back to the configured one.
+  const displayHost = resolveDisplayHost(config.host);
+  const daemonPortActual = (() => {
     try {
-      const u = new URL(sidecars.daemon.url ?? "");
-      return `${u.hostname}:${u.port}`;
+      return new URL(sidecars.daemon.url ?? "").port || (config.daemonPort != null ? String(config.daemonPort) : null);
     } catch {
-      return null;
+      return config.daemonPort != null ? String(config.daemonPort) : null;
     }
   })();
+  const daemonDirectUrl = daemonPortActual != null ? `http://${displayHost}:${daemonPortActual}` : null;
 
   if (json) {
     process.stdout.write(
-      `${JSON.stringify({ pid: process.pid, url: displayUrl, token, webPort: config.port, daemonUrl: sidecars.daemon.url ?? null })}\n`,
+      `${JSON.stringify({
+        pid: process.pid,
+        url: displayUrl,
+        webPort: config.port,
+        daemonUrl: daemonDirectUrl,
+        token,
+        tokenPersisted: tokenNotice == null ? null : tokenNotice.includes("写入配置失败") === false,
+      })}\n`,
     );
   } else {
-    process.stdout.write(`\n Open Design is running\n\n`);
-    process.stdout.write(` ➜ ${colorize(token ? `${displayUrl}/?token=${token}` : displayUrl)}\n\n`);
-    // One-port-by-design note: the only user-facing address is the web port.
-    // The daemon runs as an internal sidecar; web reverse-proxies /api to it,
-    // so there is nothing to open on the daemon port (it is loopback-only).
-    process.stdout.write(` web 监听 ${config.host}:${config.port}（上面的访问地址）\n`);
-    if (daemonAddr != null) {
+    process.stdout.write(`\n Open Design 已启动\n\n`);
+    process.stdout.write(` ➜ 浏览器访问：${colorize(displayUrl)}\n\n`);
+    // Point 4 clarification: there is ONE address the user opens. /api is NOT a
+    // separate port — the web server reverse-proxies it to the internal daemon,
+    // so the browser/UI uses the same URL and needs no token. The token only
+    // guards DIRECT calls to the daemon API (programmatic clients).
+    process.stdout.write(` • UI 与 /api 同一地址：web 反代到内部 daemon，浏览器用上面的地址即可，无需 token\n`);
+    if (daemonDirectUrl != null) {
       process.stdout.write(
-        ` daemon 内部运行于 ${daemonAddr}${config.daemonPort == null ? "（随机环回端口，仅本机）" : "（仅本机）"}，/api 由 web 反代，无需单独访问\n`,
+        token != null
+          ? ` • 直连 daemon API（仅程序化调用需要）：${daemonDirectUrl}/api，需带请求头 Authorization: Bearer <token>\n`
+          : ` • daemon 内部地址：${daemonDirectUrl}（本机访问无需 token）\n`,
       );
+    }
+    if (token != null) {
+      process.stdout.write(` • token：${token}\n`);
+      if (tokenNotice != null) process.stdout.write(`   ${tokenNotice}\n`);
     }
     process.stdout.write(`\n Press Ctrl+C to stop\n\n`);
   }
@@ -271,10 +298,10 @@ async function main(): Promise<void> {
   const { command, flags } = parseWebuiArgs(process.argv.slice(2));
   if (command === "start") {
     const json = flags.json === true;
-    const { configFile, scaffoldNotice } = discoverConfigFile(flags.config);
+    const { configFile, configPath, scaffoldNotice } = discoverConfigFile(flags.config);
     if (scaffoldNotice != null && !json) process.stdout.write(`\n ${scaffoldNotice}\n`);
     const config = resolveWebuiConfig({ flags, configFile, env: process.env });
-    await commandStart(config, json);
+    await commandStart(config, json, configPath);
     return;
   }
   await commandStopOrStatus(command, flags.json === true);
