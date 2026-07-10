@@ -169,8 +169,11 @@ function workspaceBuildOutputFiles(config: ToolPackBuildOnlyConfig): string[] {
     "apps/web/dist/sidecar/index.js",
     "apps/web/dist/sidecar/index.d.ts",
     ...(config.webOutputMode === "standalone" ? [webStandaloneServerCandidates.join("|")] : ["apps/web/.next/BUILD_ID"]),
+    // esbuild emits the flat runtime entry the packager copies; the matching
+    // `.d.ts` lands nested at dist/webui/launcher.d.ts (tsc mirrors the src
+    // tree) and is not needed to assemble the runtime, so only the .mjs is
+    // required here.
     "apps/packaged/dist/webui-launcher.mjs",
-    "apps/packaged/dist/webui-launcher.d.ts",
   ];
 }
 

@@ -62,7 +62,6 @@ const OUTPUT_FILES = [
   "apps/web/.next/standalone/apps/web/server.js",
   "apps/web/.next/static/chunk.js",
   "apps/packaged/dist/webui-launcher.mjs",
-  "apps/packaged/dist/webui-launcher.d.ts",
 ] as const;
 
 async function writeWorkspace(root: string): Promise<void> {
