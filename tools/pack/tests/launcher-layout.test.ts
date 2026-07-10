@@ -10,8 +10,6 @@ import {
   resolveToolPackLauncherLayout,
   resolveToolPackLauncherPayloadLayout,
 } from "../src/launcher-layout.js";
-import { resolveMacPaths } from "../src/mac/paths.js";
-import { resolveWinPaths } from "../src/win/paths.js";
 
 const TEST_WORKSPACE_ROOT = resolve("/work");
 
@@ -86,24 +84,6 @@ describe("tools-pack launcher layout", () => {
     expect(macPayload.payloadRoot).toBe(join(macPayload.versionRoot, "payload"));
     expect(winPayload.payloadRoot).toBe(join(winPayload.versionRoot, "payload"));
     expect(macPayload.archiveRootName).toBe("payload-0.8.1-beta.2");
-  });
-
-  it("exposes a stable mac payload zip path next to existing mac artifacts", () => {
-    const config = makeConfig(TEST_WORKSPACE_ROOT, "mac", "release-beta", "0.8.1-beta.2");
-    const paths = resolveMacPaths(config);
-
-    expect(paths.payloadZipPath).toBe(join(config.roots.output.namespaceRoot, "payload", "Open Design-release-beta-payload.zip"));
-    expect(paths.dmgPath).toBe(join(config.roots.output.namespaceRoot, "dmg", "Open Design-release-beta.dmg"));
-    expect(paths.zipPath).toBe(join(config.roots.output.namespaceRoot, "zip", "Open Design-release-beta.zip"));
-  });
-
-  it("exposes a stable Windows payload 7z path next to existing Windows artifacts", () => {
-    const config = makeConfig(TEST_WORKSPACE_ROOT, "win", "release-beta-win", "0.8.1-beta.2");
-    const paths = resolveWinPaths(config);
-
-    expect(paths.launcherPayloadPath).toBe(join(config.roots.output.namespaceRoot, "payload", "Open Design-release-beta-win-payload.7z"));
-    expect(paths.setupPath).toBe(join(config.roots.output.namespaceRoot, "builder", "Open Design-release-beta-win-setup.exe"));
-    expect(paths.setupZipPath).toBe(join(config.roots.output.namespaceRoot, "builder", "Open Design-release-beta-win-portable.zip"));
   });
 
   it("uses zip payload archives for mac and 7z payload archives for Windows", () => {

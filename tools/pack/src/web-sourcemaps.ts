@@ -36,14 +36,17 @@
 // directly and is not currently used by any release artifact; it can be
 // added later if the OSS audience reports symbolication needs.
 
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { createPackageManagerInvocation } from "@open-design/platform";
 
 import type { ToolPackBuildOnlyConfig } from "./config.js";
-import { execFileAsync } from "./mac/commands.js";
+
+const execFileAsync = promisify(execFile);
 
 const POSTHOG_CLI_VERSION = "0.7.11";
 const RELEASE_NAME = "open-design-web";

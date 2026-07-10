@@ -26,14 +26,11 @@ function loadInternalPackageNames(modulePath: string): string[] {
   return [...matches].map((m) => m[1]!);
 }
 
-const PACKAGED_APPS = ["apps/desktop", "apps/web", "apps/packaged", "apps/daemon"];
+const PACKAGED_APPS = ["apps/web", "apps/packaged", "apps/daemon"];
 const PACK_LANES = [
-  // The Linux lane's INTERNAL_PACKAGES lives in assemble.ts, the shared
-  // assembly core used by both the Linux AppImage lane and the WebUI lane
-  // (linux.ts re-exports it). Point the coverage check at the definition.
-  { lane: "linux", file: "tools/pack/src/assemble.ts" },
-  { lane: "mac", file: "tools/pack/src/mac/constants.ts" },
-  { lane: "win", file: "tools/pack/src/win/constants.ts" },
+  // The WebUI lane's INTERNAL_PACKAGES lives in assemble.ts, the shared
+  // assembly core the packager bundles for the no-Electron WebUI distribution.
+  { lane: "webui", file: "tools/pack/src/assemble.ts" },
 ];
 
 describe("INTERNAL_PACKAGES covers all workspace runtime deps", () => {

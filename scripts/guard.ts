@@ -1263,7 +1263,21 @@ async function checkStylePolicy(): Promise<boolean> {
 }
 
 async function checkCiTopology(): Promise<boolean> {
-  const ciWorkflow = await readFile(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
+  // This WebUI-only fork keeps a single `webui-build.yml` workflow and does not
+  // ship the upstream two-layer CI topology (ci.yml + scopes/playwright/nix
+  // matrices). When ci.yml is absent there is nothing to align, so skip.
+  // Only ENOENT is treated as "fork has no ci.yml"; any other read failure is a
+  // real problem and must surface rather than be swallowed.
+  let ciWorkflow: string;
+  try {
+    ciWorkflow = await readFile(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      console.log("CI topology check skipped: no .github/workflows/ci.yml (WebUI-only packaging fork).");
+      return true;
+    }
+    throw error;
+  }
   const errors = [
     ...validatePlaywrightSuiteTopology(),
     ...[

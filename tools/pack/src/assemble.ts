@@ -35,7 +35,6 @@ export const INTERNAL_PACKAGES = [
   { directory: "packages/diagnostics", name: "@open-design/diagnostics" },
   { directory: "apps/daemon", name: "@open-design/daemon" },
   { directory: "apps/web", name: "@open-design/web" },
-  { directory: "apps/desktop", name: "@open-design/desktop" },
   { directory: "apps/packaged", name: "@open-design/packaged" },
 ] as const;
 
@@ -233,6 +232,5 @@ export async function buildWorkspaceArtifacts(config: ToolPackBuildOnlyConfig): 
       await writeFile(webNextEnvPath, previousWebNextEnv, "utf8");
     }
   }
-  await runPnpm(config, ["--filter", "@open-design/desktop", "build"]);
   await runPnpm(config, ["--filter", "@open-design/packaged", "build"]);
 }
