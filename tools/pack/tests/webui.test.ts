@@ -37,6 +37,16 @@ describe("webuiArchiveName", () => {
     expect(webuiArchiveName({ platform: "win", arch: "x64", version: "0.8.1" }))
       .toBe("open-design-webui-0.8.1-win-x64.zip");
   });
+
+  it("uses a full fork release label verbatim (matches the Release tag)", () => {
+    // When --app-version carries the fork version scheme, the archive name is
+    // the label itself + platform/arch, so it lines up with the GitHub Release
+    // tag instead of double-prefixing with `open-design-webui-`.
+    expect(webuiArchiveName({ platform: "linux", arch: "x64", version: "open-design-v0.15.1-webui-v0.2" }))
+      .toBe("open-design-v0.15.1-webui-v0.2-linux-x64.tar.gz");
+    expect(webuiArchiveName({ platform: "win", arch: "x64", version: "open-design-v0.15.1-webui-v0.2" }))
+      .toBe("open-design-v0.15.1-webui-v0.2-win-x64.zip");
+  });
 });
 
 describe("resolveWebuiArchivePath", () => {

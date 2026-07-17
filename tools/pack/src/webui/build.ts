@@ -41,7 +41,15 @@ export function webuiArchiveName(input: {
   version: string;
 }): string {
   const ext = webuiArchiveKind(input.platform);
-  return `open-design-webui-${input.version}-${input.platform}-${input.arch}.${ext}`;
+  // When the caller passes a full release label following the fork's version
+  // scheme (e.g. `open-design-v0.15.1-webui-v0.2`, supplied via `--app-version`
+  // from the release workflow's tag), use it verbatim so the archive file name
+  // matches the GitHub Release tag. Otherwise fall back to the default
+  // product-prefixed name for local/dev builds (`open-design-webui-<version>`).
+  const base = input.version.startsWith("open-design")
+    ? input.version
+    : `open-design-webui-${input.version}`;
+  return `${base}-${input.platform}-${input.arch}.${ext}`;
 }
 
 // The final archive MUST live under the namespace-scoped output root, not the
@@ -79,6 +87,8 @@ export type WebuiBuildResult = {
   stageRoot: string;
   /** @next/swc-* native compiler dirs (build-only, never loaded at runtime), removed before packaging. */
   prunedNativeModules: string[];
+  /** Count of dependency `.map` source-map files stripped from node_modules before packaging. */
+  strippedSourcemaps: number;
 };
 
 // Recursively finds every `@next/swc-*` directory under a node_modules tree.
@@ -129,6 +139,40 @@ export async function pruneBuildOnlyNativeModules(appRoot: string): Promise<stri
     await rm(dir, { force: true, recursive: true });
   }
   return found;
+}
+
+// Strips runtime-irrelevant files from the assembled node_modules to shrink the
+// archive. Only `.map` source maps are removed: they are debug metadata that
+// the Node runtime never loads (unlike the `.next/static` browser maps handled
+// separately by `processWebSourcemaps`, these ride along inside dependency
+// packages after the production install). Removal is byte-for-byte safe — no
+// require() ever resolves a `.map` — and packages like `next` and `mermaid`
+// ship tens of MB of them. Returns the number of files removed for build-log
+// visibility. Never throws on an absent tree.
+export async function stripNodeModulesSourcemaps(appRoot: string): Promise<number> {
+  const root = join(appRoot, "node_modules");
+  let removed = 0;
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current == null) break;
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      continue; // missing directory at this level
+    }
+    for (const entry of entries) {
+      const entryPath = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(entryPath);
+      } else if (entry.isFile() && entry.name.endsWith(".map")) {
+        await rm(entryPath, { force: true });
+        removed += 1;
+      }
+    }
+  }
+  return removed;
 }
 
 // Ensures the assembled app carries the better-sqlite3 native binary for the
@@ -275,6 +319,9 @@ export async function buildPackedWebui(config: ToolPackBuildOnlyConfig): Promise
   // 4b) strip the build-only @next/swc native compiler (~125MB). server-mode
   //     `next start` never loads it; this is the bulk of the WebUI bundle size.
   const prunedNativeModules = await pruneBuildOnlyNativeModules(appRoot);
+  // 4c) strip dependency source maps — debug-only files the Node runtime never
+  //     loads. Safe, and trims several MB off the archive.
+  const strippedSourcemaps = await stripNodeModulesSourcemaps(appRoot);
 
   // 5) copy webui launcher scripts / wrappers / config example / README
   await stageWebuiLauncherResources(stageRoot, platform);
@@ -285,5 +332,5 @@ export async function buildPackedWebui(config: ToolPackBuildOnlyConfig): Promise
   const sevenZip = platform === "win" ? winResources.sevenZipExe : null;
   await createWebuiArchive(stageRoot, archivePath, kind, sevenZip);
 
-  return { platform, arch, archivePath, stageRoot, prunedNativeModules };
+  return { platform, arch, archivePath, stageRoot, prunedNativeModules, strippedSourcemaps };
 }

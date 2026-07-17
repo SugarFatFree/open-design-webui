@@ -63,10 +63,21 @@ jobs:
         run: |
           set -euo pipefail
           log="${{ runner.temp }}/webui-build-${{ matrix.name }}.json"
+          # When a release_tag is supplied, use it as the archive version label so
+          # each archive file name matches the Release tag (fork version scheme
+          # open-design-v<upstream>-webui-v<ours>). Without it, local/dev builds
+          # keep the default open-design-webui-<pkgVersion> name. The tag carries
+          # no spaces, so the unquoted expansion below word-splits into exactly
+          # two argv entries (or none) — portable to the macOS bash 3.2 runners.
+          app_version_arg=""
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            app_version_arg="--app-version ${{ inputs.release_tag }}"
+          fi
           pnpm exec tools-pack webui build \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
             --dir "${{ runner.temp }}/tools-pack" \
+            $app_version_arg \
             --json | tee "$log"
           # Publish exactly the one archive this matrix entry produced — read its
           # absolute path from the build JSON's `archivePath`. A recursive glob
