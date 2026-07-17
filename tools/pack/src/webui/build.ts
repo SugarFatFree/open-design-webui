@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { chmod, cp, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -89,6 +89,8 @@ export type WebuiBuildResult = {
   prunedNativeModules: string[];
   /** Count of dependency `.map` source-map files stripped from node_modules before packaging. */
   strippedSourcemaps: number;
+  /** Browser-only web packages removed from node_modules (bundled in client chunks, unused server-side). */
+  strippedClientOnlyDeps: string[];
 };
 
 // Recursively finds every `@next/swc-*` directory under a node_modules tree.
@@ -171,6 +173,74 @@ export async function stripNodeModulesSourcemaps(appRoot: string): Promise<numbe
         removed += 1;
       }
     }
+  }
+  return removed;
+}
+
+// Browser-only packages that Next bundles into client chunks (`.next/static`)
+// at build time and that neither the Next server (`.next/server`) nor the
+// daemon ever `require()` at runtime. In server mode `next start` serves the
+// pre-built client chunks statically, so these node_modules copies are dead
+// weight. Verified against `.next/server` (0 refs) and the daemon source (no
+// real import — daemon only names `mermaid` in prompt text / an MCP server id).
+// Deliberately EXCLUDES `pdf-lib` (imported by daemon deck-export) and
+// `posthog-js` (referenced in `.next/server`).
+const CLIENT_ONLY_PRUNE_CANDIDATES = [
+  "@excalidraw/excalidraw",
+  "mermaid",
+  "jspdf",
+  "lucide-react",
+] as const;
+
+async function serverBuildReferences(serverDir: string, packageName: string): Promise<boolean> {
+  const needles = [`node_modules/${packageName}`, `"${packageName}"`, `'${packageName}'`, `${packageName}/`];
+  const stack: string[] = [serverDir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current == null) break;
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const entryPath = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(entryPath);
+      } else if (entry.isFile() && /\.(js|cjs|mjs|json)$/.test(entry.name)) {
+        let text = "";
+        try {
+          text = await readFile(entryPath, "utf8");
+        } catch {
+          continue;
+        }
+        if (needles.some((n) => text.includes(n))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Removes the curated browser-only dependencies from the assembled node_modules,
+// but ONLY those the built Next server does not reference — a self-protecting
+// guard so a future upstream change that pulls one of these server-side keeps it
+// instead of silently breaking `next start`. Returns the removed package names.
+export async function stripClientOnlyWebDependencies(
+  appRoot: string,
+  webServerDir: string,
+): Promise<string[]> {
+  const removed: string[] = [];
+  for (const packageName of CLIENT_ONLY_PRUNE_CANDIDATES) {
+    if (await serverBuildReferences(webServerDir, packageName)) continue; // server needs it — keep
+    const dir = join(appRoot, "node_modules", ...packageName.split("/"));
+    try {
+      await stat(dir);
+    } catch {
+      continue; // not installed here
+    }
+    await rm(dir, { force: true, recursive: true });
+    removed.push(packageName);
   }
   return removed;
 }
@@ -322,6 +392,12 @@ export async function buildPackedWebui(config: ToolPackBuildOnlyConfig): Promise
   // 4c) strip dependency source maps — debug-only files the Node runtime never
   //     loads. Safe, and trims several MB off the archive.
   const strippedSourcemaps = await stripNodeModulesSourcemaps(appRoot);
+  // 4d) drop browser-only web dependencies (excalidraw/mermaid/jspdf/lucide) that
+  //     ship inside client chunks and are never required by the Next server or
+  //     daemon at runtime — the single biggest safe win. Guarded by a scan of the
+  //     built `.next/server`, so anything the server actually references is kept.
+  const webServerDir = join(config.workspaceRoot, "apps", "web", ".next", "server");
+  const strippedClientOnlyDeps = await stripClientOnlyWebDependencies(appRoot, webServerDir);
 
   // 5) copy webui launcher scripts / wrappers / config example / README
   await stageWebuiLauncherResources(stageRoot, platform);
@@ -332,5 +408,5 @@ export async function buildPackedWebui(config: ToolPackBuildOnlyConfig): Promise
   const sevenZip = platform === "win" ? winResources.sevenZipExe : null;
   await createWebuiArchive(stageRoot, archivePath, kind, sevenZip);
 
-  return { platform, arch, archivePath, stageRoot, prunedNativeModules, strippedSourcemaps };
+  return { platform, arch, archivePath, stageRoot, prunedNativeModules, strippedSourcemaps, strippedClientOnlyDeps };
 }

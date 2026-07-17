@@ -23,6 +23,7 @@ import {
   resolveWebuiArchivePath,
   resolveWebuiPackConfig,
   stageWebuiLauncherResources,
+  stripClientOnlyWebDependencies,
   webuiArchiveName,
   webuiArchiveKind,
 } from "../src/webui/build.js";
@@ -46,6 +47,38 @@ describe("webuiArchiveName", () => {
       .toBe("open-design-v0.15.1-webui-v0.2-linux-x64.tar.gz");
     expect(webuiArchiveName({ platform: "win", arch: "x64", version: "open-design-v0.15.1-webui-v0.2" }))
       .toBe("open-design-v0.15.1-webui-v0.2-win-x64.zip");
+  });
+});
+
+describe("stripClientOnlyWebDependencies", () => {
+  it("removes browser-only deps the server never references, and keeps those it does", async () => {
+    const root = mkdtempSync(join(tmpdir(), "od-strip-client-"));
+    try {
+      const nm = join(root, "app", "node_modules");
+      // Candidate packages plus a non-candidate (pdf-lib) that must be untouched.
+      for (const pkg of ["@excalidraw/excalidraw", "mermaid", "jspdf", "lucide-react", "pdf-lib"]) {
+        const dir = join(nm, ...pkg.split("/"));
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "index.js"), "module.exports = {};\n", "utf8");
+      }
+      // Built server output references only `mermaid` → the guard must keep it.
+      const serverDir = join(root, "web", ".next", "server");
+      mkdirSync(serverDir, { recursive: true });
+      writeFileSync(join(serverDir, "chunk.js"), 'require("mermaid");\n', "utf8");
+
+      const removed = await stripClientOnlyWebDependencies(join(root, "app"), serverDir);
+
+      expect(removed.sort()).toEqual(["@excalidraw/excalidraw", "jspdf", "lucide-react"]);
+      // mermaid kept because the server build references it.
+      expect(existsSync(join(nm, "mermaid"))).toBe(true);
+      // non-candidate pdf-lib untouched.
+      expect(existsSync(join(nm, "pdf-lib"))).toBe(true);
+      // removed ones are gone.
+      expect(existsSync(join(nm, "@excalidraw", "excalidraw"))).toBe(false);
+      expect(existsSync(join(nm, "jspdf"))).toBe(false);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   });
 });
 
