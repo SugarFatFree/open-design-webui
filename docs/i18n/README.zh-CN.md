@@ -50,21 +50,20 @@
 
 ```bash
 tar -xzf open-design-*-linux-x64.tar.gz     # macOS 上用 unzip
-cd open-design-*/
-chmod +x start.sh                            # macOS 的 zip 可能会丢掉可执行位
-./start.sh
+cd <解压出的文件夹>
+chmod +x open-design.sh                        # macOS 的 zip 可能会丢掉可执行位
+./open-design.sh
 ```
+
+macOS 用户也可以直接双击 **`Open Design WebUI.command`**。
 
 **Windows**
 
-```bat
-:: 解压压缩包,然后在解压出的文件夹里:
-start.bat
-```
+解压后双击 **`Open Design WebUI.bat`** —— 或在解压出的文件夹里用终端运行 `open-design.cmd`。
 
 然后在浏览器里打开 **http://127.0.0.1:7456**。Web UI 在 `7456` 端口;daemon 在 `7457` 端口,并通过 `/api` 反向代理,所以浏览器只需这一个地址。
 
-停止:`./start.sh stop`(Linux/macOS)或 `start.bat stop`(Windows)。
+停止:`./open-design.sh stop`(Linux/macOS)或 `open-design.cmd stop`(Windows)。
 
 ## 版本号约定
 

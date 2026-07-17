@@ -50,21 +50,20 @@
 
 ```bash
 tar -xzf open-design-*-linux-x64.tar.gz     # macOS 에서는 unzip
-cd open-design-*/
-chmod +x start.sh                            # macOS zip 은 실행 비트가 사라질 수 있습니다
-./start.sh
+cd <압축을 푼 폴더>
+chmod +x open-design.sh                        # macOS zip 은 실행 비트가 사라질 수 있습니다
+./open-design.sh
 ```
+
+macOS 사용자는 **`Open Design WebUI.command`** 을 더블클릭해도 됩니다.
 
 **Windows**
 
-```bat
-:: 아카이브를 풀고, 풀린 폴더에서:
-start.bat
-```
+아카이브를 풀고 **`Open Design WebUI.bat`** 을 더블클릭 —— 또는 압축을 푼 폴더의 터미널에서 `open-design.cmd` 를 실행합니다.
 
 그런 다음 브라우저에서 **http://127.0.0.1:7456** 을 엽니다. 웹 UI는 `7456` 포트에서, daemon은 `7457` 포트에서 실행되며 `/api` 로 리버스 프록시되므로 브라우저는 이 주소 하나만 있으면 됩니다.
 
-중지: `./start.sh stop`(Linux/macOS) 또는 `start.bat stop`(Windows).
+중지: `./open-design.sh stop`(Linux/macOS) 또는 `open-design.cmd stop`(Windows).
 
 ## 버전 규칙
 

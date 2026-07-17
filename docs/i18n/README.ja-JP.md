@@ -50,21 +50,20 @@
 
 ```bash
 tar -xzf open-design-*-linux-x64.tar.gz     # macOS では unzip
-cd open-design-*/
-chmod +x start.sh                            # macOS の zip では実行ビットが落ちることがあります
-./start.sh
+cd <展開したフォルダー>
+chmod +x open-design.sh                        # macOS の zip では実行ビットが落ちることがあります
+./open-design.sh
 ```
+
+macOS ユーザーは **`Open Design WebUI.command`** をダブルクリックするだけでも起動できます。
 
 **Windows**
 
-```bat
-:: アーカイブを展開し、展開したフォルダーで:
-start.bat
-```
+アーカイブを展開し、**`Open Design WebUI.bat`** をダブルクリック —— または展開したフォルダーのターミナルで `open-design.cmd` を実行します。
 
 その後ブラウザで **http://127.0.0.1:7456** を開きます。Web UI はポート `7456`、daemon はポート `7457` で動作し `/api` にリバースプロキシされるため、ブラウザはこの 1 つのアドレスだけで済みます。
 
-停止は `./start.sh stop`(Linux/macOS)または `start.bat stop`(Windows)。
+停止は `./open-design.sh stop`(Linux/macOS)または `open-design.cmd stop`(Windows)。
 
 ## バージョン規則
 

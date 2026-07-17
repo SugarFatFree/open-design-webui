@@ -50,21 +50,20 @@ Grab the archive for your platform from the [latest release](https://github.com/
 
 ```bash
 tar -xzf open-design-*-linux-x64.tar.gz     # or unzip on macOS
-cd open-design-*/
-chmod +x start.sh                            # macOS zips may drop the exec bit
-./start.sh
+cd <extracted-folder>
+chmod +x open-design.sh                       # macOS zips may drop the exec bit
+./open-design.sh
 ```
+
+macOS users can also just double-click **`Open Design WebUI.command`**.
 
 **Windows**
 
-```bat
-:: unzip the archive, then from the extracted folder:
-start.bat
-```
+Unzip the archive, then double-click **`Open Design WebUI.bat`** — or from a terminal in the extracted folder run `open-design.cmd`.
 
 Then open **http://127.0.0.1:7456** in your browser. The web UI is served on port `7456`; the daemon runs on `7457` and is reverse-proxied under `/api`, so the browser only ever needs the one address.
 
-Stop it with `./start.sh stop` (Linux/macOS) or `start.bat stop` (Windows).
+Stop it with `./open-design.sh stop` (Linux/macOS) or `open-design.cmd stop` (Windows).
 
 ## Versioning
 

@@ -87,6 +87,49 @@ jobs:
           test -f "$archive"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
 
+      # Runtime smoke test on the Linux runner: prove the packaged app actually
+      # starts and serves, so the node_modules pruning (client-only deps removed)
+      # can never silently ship a package that fails to boot. The runner has
+      # system Node 24 (setup-node above) and no DISPLAY, so the launcher skips
+      # opening a browser. Only runs for the linux tar.gz this job produced.
+      - name: Smoke test (linux)
+        if: ${{ matrix.platform == 'linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${{ runner.temp }}/smoke"
+          rm -rf "$root"; mkdir -p "$root"
+          tar -xzf "${{ steps.build.outputs.archive }}" -C "$root"
+          test -x "$root/open-design.sh"
+
+          # Pruning invariants: client-only deps gone, kept deps present, client
+          # chunks (.next/static) intact so browser features still ship.
+          nm="$root/app/node_modules"
+          web_static="$nm/@open-design/web/.next/static"
+          test -d "$web_static" || { echo "missing web .next/static — client bundle broken"; exit 1; }
+          for gone in "@excalidraw/excalidraw" mermaid jspdf lucide-react; do
+            if [ -e "$nm/$gone" ]; then echo "client-only dep NOT pruned: $gone"; exit 1; fi
+          done
+          test -d "$nm/pdf-lib" || { echo "pdf-lib (used by daemon) was wrongly pruned"; exit 1; }
+
+          # Start (backgrounds a worker, blocks until ready, prints banner JSON).
+          out="$("$root/open-design.sh" start --json)"
+          echo "$out"
+          url="$(printf '%s' "$out" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const line=s.trim().split('\n').filter(Boolean).pop();process.stdout.write(JSON.parse(line).url)})")"
+          test -n "$url"
+
+          # The web root must serve HTML (200). Retry briefly for first-hit warmup.
+          ok=0
+          for i in $(seq 1 20); do
+            code="$(curl -s -o "$root/page.html" -w '%{http_code}' "$url" || true)"
+            if [ "$code" = "200" ]; then ok=1; break; fi
+            sleep 2
+          done
+          "$root/open-design.sh" stop || true
+          [ "$ok" = "1" ] || { echo "web root did not return 200 (last=$code)"; exit 1; }
+          grep -qiE "<!doctype html|<html|id=\"?root" "$root/page.html" || { echo "web root response is not the app HTML"; head -c 400 "$root/page.html"; exit 1; }
+          echo "Smoke test passed: packaged WebUI booted and served $url"
+
       - name: Upload WebUI archive
         uses: actions/upload-artifact@v7
         with:
