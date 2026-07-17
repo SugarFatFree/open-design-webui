@@ -1,6 +1,6 @@
 {
   "name": "@open-design/packaged",
-  "version": "0.14.1",
+  "version": "0.15.1",
   "private": true,
   "type": "module",
   "main": "./dist/webui-launcher.mjs",
@@ -27,6 +27,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
   },
   "dependencies": {
+    "@open-design/contracts": "workspace:*",
     "@open-design/daemon": "workspace:*",
     "@open-design/launcher-proto": "workspace:*",
     "@open-design/platform": "workspace:*",
